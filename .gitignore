@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# runtime folder the launcher creates next to itself
+/mods
