@@ -1,5 +1,6 @@
 //! Discover mod `.pck`s in the launcher's `mods/` folder and read their metadata.
 
+use crate::archive;
 use crate::install;
 use crate::meta::{self, ModMeta};
 use std::fs;
@@ -10,6 +11,8 @@ pub struct ModEntry {
     pub meta: ModMeta,
     pub has_meta: bool,
     pub fingerprint: Option<u64>,
+    /// True when the mod is a `.zip` bundle (`.pck` + `mod.json`) rather than a bare `.pck`.
+    pub is_zip: bool,
 }
 
 impl ModEntry {
@@ -49,7 +52,8 @@ pub fn mods_dir() -> PathBuf {
     dir
 }
 
-/// Recursively collect every `*.pck` under `dir` and read its metadata.
+/// Recursively collect every `*.pck` and every zipped mod (`*.zip`) under `dir` and read
+/// their metadata.
 pub fn scan(dir: &Path) -> Vec<ModEntry> {
     let mut out = Vec::new();
     collect(dir, 0, &mut out);
@@ -75,6 +79,20 @@ fn collect(dir: &Path, depth: usize, out: &mut Vec<ModEntry>) {
                 has_meta: meta.is_some(),
                 meta: meta.unwrap_or_default(),
                 path: p,
+                is_zip: false,
+            });
+        } else if archive::is_zip(&p) {
+            // Only treat a zip as a mod when it actually bundles a .pck to install.
+            if archive::pck_entry_name(&p).is_none() {
+                continue;
+            }
+            let meta = archive::read_meta(&p);
+            out.push(ModEntry {
+                fingerprint: archive::pck_fingerprint(&p),
+                has_meta: meta.is_some(),
+                meta: meta.unwrap_or_default(),
+                path: p,
+                is_zip: true,
             });
         }
     }

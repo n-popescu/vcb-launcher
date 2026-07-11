@@ -13,7 +13,7 @@
 //! offsets are absolute from the start of a standalone `.pck`.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const PCK_MAGIC: u32 = 0x4350_4447; // bytes 'G','D','P','C' read little-endian
@@ -30,26 +30,37 @@ fn read_u64(f: &mut impl Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(b))
 }
 
-/// Extract the bytes of the packed file at `want` (e.g. `"res://mod.json"`).
-/// Returns `Ok(None)` when the file isn't a pck we understand or the entry is absent.
+/// Extract the bytes of the packed file at `want` (e.g. `"res://mod.json"`) from a `.pck`
+/// on disk. Returns `Ok(None)` when the file isn't a pck we understand or the entry is
+/// absent.
 pub fn extract_file(pck_path: &Path, want: &str) -> io::Result<Option<Vec<u8>>> {
     let mut f = File::open(pck_path)?;
+    extract_from_reader(&mut f, want)
+}
 
-    if read_u32(&mut f)? != PCK_MAGIC {
+/// Same as [`extract_file`], but for a `.pck` already held in memory — used to read a mod's
+/// metadata out of a `.pck` that lives *inside* a zipped mod.
+pub fn extract_from_bytes(bytes: &[u8], want: &str) -> io::Result<Option<Vec<u8>>> {
+    let mut c = Cursor::new(bytes);
+    extract_from_reader(&mut c, want)
+}
+
+fn extract_from_reader<R: Read + Seek>(f: &mut R, want: &str) -> io::Result<Option<Vec<u8>>> {
+    if read_u32(f)? != PCK_MAGIC {
         return Ok(None);
     }
-    let version = read_u32(&mut f)?; // pack format version (1 = Godot 3.x, 2 = Godot 4.x)
-    let _ver_major = read_u32(&mut f)?;
-    let _ver_minor = read_u32(&mut f)?;
-    let _ver_rev = read_u32(&mut f)?;
+    let version = read_u32(f)?; // pack format version (1 = Godot 3.x, 2 = Godot 4.x)
+    let _ver_major = read_u32(f)?;
+    let _ver_minor = read_u32(f)?;
+    let _ver_rev = read_u32(f)?;
     if version >= 2 {
-        let _flags = read_u32(&mut f)?;
-        let _file_base = read_u64(&mut f)?;
+        let _flags = read_u32(f)?;
+        let _file_base = read_u64(f)?;
     }
     for _ in 0..16 {
-        let _reserved = read_u32(&mut f)?;
+        let _reserved = read_u32(f)?;
     }
-    let file_count = read_u32(&mut f)?;
+    let file_count = read_u32(f)?;
 
     // Guard against a corrupt/hostile count blowing up the loop.
     if file_count > 5_000_000 {
@@ -57,7 +68,7 @@ pub fn extract_file(pck_path: &Path, want: &str) -> io::Result<Option<Vec<u8>>> 
     }
 
     for _ in 0..file_count {
-        let sl = read_u32(&mut f)? as usize;
+        let sl = read_u32(f)? as usize;
         if sl > 4096 {
             return Ok(None); // implausible path length; bail rather than allocate wildly
         }
@@ -68,12 +79,12 @@ pub fn extract_file(pck_path: &Path, want: &str) -> io::Result<Option<Vec<u8>>> 
         }
         let path = String::from_utf8_lossy(&pbuf).to_string();
 
-        let ofs = read_u64(&mut f)?;
-        let size = read_u64(&mut f)?;
+        let ofs = read_u64(f)?;
+        let size = read_u64(f)?;
         let mut md5 = [0u8; 16];
         f.read_exact(&mut md5)?;
         if version >= 2 {
-            let _entry_flags = read_u32(&mut f)?;
+            let _entry_flags = read_u32(f)?;
         }
 
         if path == want {
@@ -140,6 +151,10 @@ mod tests {
 
         let got = extract_file(&path, "res://mod.json").unwrap();
         assert_eq!(got.as_deref(), Some(&json[..]));
+
+        // The in-memory path (used for .pck files inside a zipped mod) agrees.
+        let got_bytes = extract_from_bytes(&pck, "res://mod.json").unwrap();
+        assert_eq!(got_bytes.as_deref(), Some(&json[..]));
 
         let missing = extract_file(&path, "res://nope.json").unwrap();
         assert!(missing.is_none());

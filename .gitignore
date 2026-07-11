@@ -2,5 +2,6 @@
 **/*.rs.bk
 *.pdb
 
-# runtime folder the launcher creates next to itself
+# runtime files the launcher creates next to itself
 /mods
+/launcher_config.json

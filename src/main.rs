@@ -2,6 +2,9 @@
 // Steam install of Virtual Circuit Board. See README.md.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod archive;
+mod config;
+mod icon;
 mod install;
 mod meta;
 mod pck;
@@ -26,7 +29,8 @@ fn main() -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([980.0, 640.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_title("VCB Mod Launcher"),
+            .with_title("VCB Mod Launcher")
+            .with_icon(icon::app_icon()),
         ..Default::default()
     };
     eframe::run_native(
@@ -56,8 +60,17 @@ struct LauncherApp {
 impl LauncherApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
+
+        // Prefer the folder the user set last time; only fall back to auto-detection.
+        let remembered = config::load()
+            .game_dir
+            .map(PathBuf::from)
+            .filter(|p| steam::is_game_dir(p));
+        let from_config = remembered.is_some();
+        let game_dir = remembered.or_else(steam::find_game_dir);
+
         let mut app = LauncherApp {
-            game_dir: steam::find_game_dir(),
+            game_dir,
             game_dir_input: String::new(),
             mods: Vec::new(),
             selected: Sel::None,
@@ -67,7 +80,11 @@ impl LauncherApp {
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
-            app.status = format!("Found the game at {}", d.display());
+            app.status = if from_config {
+                format!("Using saved game folder {}", d.display())
+            } else {
+                format!("Found the game at {}", d.display())
+            };
         } else {
             app.status = "Couldn't auto-detect a Steam install — set the game folder above."
                 .to_string();
@@ -109,6 +126,7 @@ impl LauncherApp {
             Some(d) => {
                 self.game_dir_input = d.display().to_string();
                 self.game_dir = Some(d.clone());
+                config::save_game_dir(&d);
                 self.refresh_active();
                 self.set_ok(format!("Found the game at {}", d.display()));
             }
@@ -127,8 +145,9 @@ impl LauncherApp {
             return;
         }
         self.game_dir = Some(p.clone());
+        config::save_game_dir(&p);
         self.refresh_active();
-        self.set_ok(format!("Using game folder {}", p.display()));
+        self.set_ok(format!("Using game folder {} (remembered for next time)", p.display()));
     }
 
     fn activate(&mut self, idx: usize) {
@@ -138,9 +157,15 @@ impl LauncherApp {
         };
         let Some(entry) = self.mods.get(idx) else { return };
         let path = entry.path.clone();
+        let is_zip = entry.is_zip;
         let name = entry.display_name();
         let had_backup = install::has_backup(&dir);
-        match install::install(&dir, &path) {
+        let result = if is_zip {
+            install::install_zip(&dir, &path)
+        } else {
+            install::install(&dir, &path)
+        };
+        match result {
             Ok(()) => {
                 self.refresh_active();
                 let note = if !had_backup && !install::has_backup(&dir) {
@@ -211,9 +236,30 @@ impl eframe::App for LauncherApp {
 
 impl LauncherApp {
     fn header_ui(&mut self, ui: &mut egui::Ui) {
+        let can_revert = self.game_dir.as_ref().map(|d| install::has_backup(d)).unwrap_or(false);
         ui.horizontal(|ui| {
+            let (logo_rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+            paint_logo(ui.painter(), logo_rect);
+            ui.add_space(4.0);
             ui.label(egui::RichText::new("VCB").size(22.0).strong().color(ACCENT));
             ui.label(egui::RichText::new("Mod Launcher").size(22.0).strong().color(TEXT));
+
+            // Always-available "go back to the unmodded game" action.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let label = egui::RichText::new("⟲ Revert to vanilla")
+                    .color(if can_revert { TEXT } else { DIM });
+                let btn = egui::Button::new(label)
+                    .stroke(egui::Stroke::new(1.0, if can_revert { RED } else { DIM }))
+                    .rounding(egui::Rounding::same(6.0));
+                let hover = if can_revert {
+                    "Restore the original vcb.pck (vcb.pck.original) — undo any active mod"
+                } else {
+                    "No vanilla backup yet — it's created the first time you activate a mod over a clean install"
+                };
+                if ui.add_enabled(can_revert, btn).on_hover_text(hover).clicked() {
+                    self.restore();
+                }
+            });
         });
         ui.add_space(2.0);
         ui.label(
@@ -283,7 +329,7 @@ impl LauncherApp {
                 if self.mods.is_empty() {
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("No .pck mods found.\nDrop mod .pck files into the mods folder, then press ⟳.")
+                        egui::RichText::new("No mods found.\nDrop mod .pck files — or zipped mods (.zip with a vcb.pck + mod.json) — into the mods folder, then press ⟳.")
                             .size(12.0)
                             .color(DIM),
                     );
@@ -293,7 +339,10 @@ impl LauncherApp {
                     let (name, sub) = {
                         let m = &self.mods[i];
                         let ver = if m.meta.version.is_empty() { String::new() } else { format!("v{}", m.meta.version) };
-                        let tag = if m.has_meta { ver } else { "no metadata".to_string() };
+                        let mut tag = if m.has_meta { ver } else { "no metadata".to_string() };
+                        if m.is_zip {
+                            tag = if tag.is_empty() { "zip".to_string() } else { format!("{}  ·  zip", tag) };
+                        }
                         (m.display_name(), tag)
                     };
                     let selected = self.selected == Sel::Mod(i);
@@ -448,8 +497,8 @@ impl LauncherApp {
             } else if ui.button("Activate only").clicked() {
                 self.activate(i);
             }
-            if ui.button("Read metadata").on_hover_text("Re-parse mod.json from the .pck").clicked() {
-                let m = meta::read(&path);
+            if ui.button("Read metadata").on_hover_text("Re-parse mod.json from the mod package").clicked() {
+                let m = meta::read_any(&path);
                 match m {
                     Some(_) => self.set_ok(format!("Read metadata from {}", path.display())),
                     None => self.set_err(format!("No mod.json inside or beside {}", path.display())),
@@ -514,6 +563,38 @@ fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
             .fill(ACCENT)
             .rounding(egui::Rounding::same(6.0)),
     )
+}
+
+/// The app's little logo — a circuit chip with pins and a lit central via — drawn as
+/// vectors so it stays crisp at any DPI. Matches the window icon in `icon.rs`.
+fn paint_logo(p: &egui::Painter, rect: egui::Rect) {
+    let c = rect.center();
+    let s = rect.width();
+    let body = egui::Rect::from_center_size(c, rect.size() * 0.72);
+    let rounding = egui::Rounding::same(4.0);
+    let pin = egui::Stroke::new(1.6, ACCENT.linear_multiply(0.75));
+
+    // Chip pins (three per side), behind the body.
+    for k in [-1.0_f32, 0.0, 1.0] {
+        let o = k * s * 0.2;
+        p.line_segment([egui::pos2(body.left() - s * 0.12, c.y + o), egui::pos2(body.left(), c.y + o)], pin);
+        p.line_segment([egui::pos2(body.right(), c.y + o), egui::pos2(body.right() + s * 0.12, c.y + o)], pin);
+        p.line_segment([egui::pos2(c.x + o, body.top() - s * 0.12), egui::pos2(c.x + o, body.top())], pin);
+        p.line_segment([egui::pos2(c.x + o, body.bottom()), egui::pos2(c.x + o, body.bottom() + s * 0.12)], pin);
+    }
+
+    // Chip body.
+    p.rect_filled(body, rounding, CARD);
+    p.rect_stroke(body, rounding, egui::Stroke::new(1.8, ACCENT));
+
+    // Traces out of the via.
+    let tr = egui::Stroke::new(1.6, ACCENT);
+    p.line_segment([c, egui::pos2(body.right() - 2.0, c.y)], tr);
+    p.line_segment([c, egui::pos2(c.x, body.bottom() - 2.0)], tr);
+
+    // Lit via.
+    p.circle_filled(c, 3.0, ACCENT);
+    p.circle_filled(c, 1.2, BG);
 }
 
 // --- style / os ------------------------------------------------------------------------
