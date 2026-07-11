@@ -30,6 +30,15 @@ pub struct ModMeta {
     pub homepage: String,
 }
 
+/// Read a mod's metadata from any accepted package — a `.pck` or a zipped mod (`.zip`).
+pub fn read_any(path: &Path) -> Option<ModMeta> {
+    if crate::archive::is_zip(path) {
+        crate::archive::read_meta(path)
+    } else {
+        read(path)
+    }
+}
+
 /// Read a mod's metadata: first from `res://mod.json` inside the `.pck`, then from a
 /// sidecar `mod.json` / `<stem>.json` next to it. `None` if neither is present/valid.
 pub fn read(pck_path: &Path) -> Option<ModMeta> {

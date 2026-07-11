@@ -4,6 +4,7 @@
 //! untouched. The first time we touch a *vanilla* `vcb.pck` we copy it aside to
 //! `vcb.pck.original` so "Restore vanilla" always has a real restore point.
 
+use crate::archive;
 use crate::meta;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -30,16 +31,30 @@ pub fn is_vanilla(pck: &Path) -> bool {
     meta::read(pck).is_none()
 }
 
-/// Install `mod_pck` as the active `vcb.pck`. Preserves a one-time vanilla backup.
-pub fn install(game_dir: &Path, mod_pck: &Path) -> io::Result<()> {
+/// Snapshot the current `vcb.pck` to the one-time vanilla backup, but only if it's a
+/// genuine vanilla pack and we don't already have a backup.
+fn snapshot_vanilla_if_needed(game_dir: &Path) -> io::Result<()> {
     let pck = pck_path(game_dir);
     let backup = backup_path(game_dir);
-
     if !backup.exists() && pck.is_file() && is_vanilla(&pck) {
-        // Only ever snapshot the genuine vanilla pack as the restore point.
         fs::copy(&pck, &backup)?;
     }
-    fs::copy(mod_pck, &pck)?;
+    Ok(())
+}
+
+/// Install `mod_pck` (a `.pck` on disk) as the active `vcb.pck`. Preserves a one-time
+/// vanilla backup.
+pub fn install(game_dir: &Path, mod_pck: &Path) -> io::Result<()> {
+    snapshot_vanilla_if_needed(game_dir)?;
+    fs::copy(mod_pck, pck_path(game_dir))?;
+    Ok(())
+}
+
+/// Install a **zipped mod**: extract the `.pck` bundled inside `zip_path` over the game's
+/// `vcb.pck`. Preserves the same one-time vanilla backup as [`install`].
+pub fn install_zip(game_dir: &Path, zip_path: &Path) -> io::Result<()> {
+    snapshot_vanilla_if_needed(game_dir)?;
+    archive::extract_pck_to(zip_path, &pck_path(game_dir))?;
     Ok(())
 }
 
@@ -56,29 +71,53 @@ pub fn restore(game_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// How many bytes we sample from each end when fingerprinting.
+const SAMPLE: u64 = 256 * 1024;
+
+fn hash_parts(len: u64, head: &[u8], tail: Option<&[u8]>) -> u64 {
+    let mut h = DefaultHasher::new();
+    h.write_u64(len);
+    h.write(head);
+    if let Some(t) = tail {
+        h.write(t);
+    }
+    h.finish()
+}
+
 /// Cheap content signature (length + sampled head/tail bytes) used to tell which mod is
 /// currently installed without hashing tens of MB in full.
 pub fn fingerprint(path: &Path) -> Option<u64> {
     let meta = fs::metadata(path).ok()?;
     let len = meta.len();
     let mut f = fs::File::open(path).ok()?;
-    let mut h = DefaultHasher::new();
-    h.write_u64(len);
 
-    let sample = 256 * 1024u64;
-    let mut head = vec![0u8; sample.min(len) as usize];
+    let mut head = vec![0u8; SAMPLE.min(len) as usize];
     f.read_exact(&mut head).ok()?;
-    h.write(&head);
 
-    if len > sample {
+    let tail = if len > SAMPLE {
         use std::io::{Seek, SeekFrom};
-        let tail = sample.min(len);
-        f.seek(SeekFrom::End(-(tail as i64))).ok()?;
-        let mut buf = vec![0u8; tail as usize];
+        f.seek(SeekFrom::End(-(SAMPLE as i64))).ok()?;
+        let mut buf = vec![0u8; SAMPLE as usize];
         f.read_exact(&mut buf).ok()?;
-        h.write(&buf);
-    }
-    Some(h.finish())
+        Some(buf)
+    } else {
+        None
+    };
+    Some(hash_parts(len, &head, tail.as_deref()))
+}
+
+/// Same signature as [`fingerprint`], computed over bytes already in memory (the
+/// decompressed `.pck` from inside a zipped mod). Kept byte-identical to [`fingerprint`]
+/// so a zipped mod matches the file it installs as.
+pub fn fingerprint_bytes(data: &[u8]) -> u64 {
+    let len = data.len() as u64;
+    let head = &data[..SAMPLE.min(len) as usize];
+    let tail = if len > SAMPLE {
+        Some(&data[data.len() - SAMPLE as usize..])
+    } else {
+        None
+    };
+    hash_parts(len, head, tail)
 }
 
 /// What the game's current `vcb.pck` matches.

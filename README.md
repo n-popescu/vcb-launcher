@@ -19,7 +19,13 @@ Single self-contained executable — no installer, no runtime, no Python. Window
   the single `vcb.pck` name. A sidecar `mod.json` next to the `.pck` also works.
 - **Activate** a mod → backs up the original `vcb.pck` once (to `vcb.pck.original`) and
   copies the mod over `vcb.pck`.
-- **Restore vanilla** → puts the backup back.
+- **Revert to vanilla** → an always-visible button (top-right) puts the backup back so
+  you're one click away from the unmodded game at any time. (Selecting **Vanilla game**
+  and pressing **Restore vanilla** does the same thing.)
+- **Zipped mods** → drop a `.zip` bundling a `vcb.pck` + `mod.json` into `mods/` and the
+  launcher reads it and installs it just like a loose `.pck`.
+- **Remembers the game folder** → the folder you set (or auto-detect) is saved to
+  `launcher_config.json` next to the launcher, so it's already filled in next launch.
 
 ## Using it
 
@@ -28,10 +34,12 @@ Single self-contained executable — no installer, no runtime, no Python. Window
 2. Drop mod packages into `mods/`. Each mod is a Godot `.pck`. Because every installed mod
    is named `vcb.pck`, you can keep them apart however you like:
    - one `.pck` per subfolder — `mods/multiplayer/vcb.pck`, `mods/traces/vcb.pck`, … , or
-   - distinctly-named files — `mods/multiplayer.pck`, `mods/traces.pck`, …
+   - distinctly-named files — `mods/multiplayer.pck`, `mods/traces.pck`, … , or
+   - a **zipped mod** — `mods/multiplayer.zip` containing a `vcb.pck` and a `mod.json`.
    The launcher scans `mods/` recursively and identifies each by its embedded metadata.
-3. Launch it. It auto-detects the game; if not, paste the game folder path up top and
-   press **Use**.
+3. Launch it. On first run it auto-detects the game; after that it reuses the folder you
+   last used (remembered in `launcher_config.json`). If it can't find it, paste the game
+   folder path up top and press **Use**.
 4. Pick a mod on the left and press **▶ Launch modded** — the launcher copies it in as
    `vcb.pck` (backing up your original first) and starts the game. **Activate only** just
    swaps the file if you'd rather launch from Steam. Select **Vanilla game** to
@@ -98,12 +106,18 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
 
 ## How it works
 
-- `src/pck.rs` — a tiny reader for the Godot `.pck` format; extracts `res://mod.json`.
-- `src/meta.rs` — the `mod.json` schema + embedded/sidecar lookup.
+- `src/pck.rs` — a tiny reader for the Godot `.pck` format; extracts `res://mod.json`
+  from a file or from bytes (for `.pck`s inside a zip).
+- `src/archive.rs` — zipped-mod support: reads metadata from a `.zip` and extracts its
+  bundled `.pck` on activation.
+- `src/meta.rs` — the `mod.json` schema + embedded/sidecar/zip lookup.
 - `src/steam.rs` — Steam library discovery (Windows registry + common paths; Linux
   native + Flatpak) and game-folder detection.
-- `src/install.rs` — backup / restore / install and "which mod is active" detection.
-- `src/scan.rs` — finds `.pck`s under `mods/` and reads their metadata.
+- `src/config.rs` — persists the chosen game folder (`launcher_config.json`).
+- `src/install.rs` — backup / restore / install (`.pck` and `.zip`) and "which mod is
+  active" detection.
+- `src/scan.rs` — finds `.pck`s and zipped mods under `mods/` and reads their metadata.
+- `src/icon.rs` — the procedurally-drawn window/taskbar icon.
 - `src/main.rs` — the [egui](https://github.com/emilk/egui) UI.
 
 Built with Rust + egui/eframe, so the whole app is one portable binary with no external
