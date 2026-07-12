@@ -1,14 +1,30 @@
 # vcb-launcher
 
 A small, **portable GUI mod launcher** for [Virtual Circuit Board](https://store.steampowered.com/app/367020/).
-It swaps a mod's `vcb.pck` into your Steam install (keeping the game's executable
-untouched) and keeps a one-time backup of your original so you can always go back.
+
+It supports two modding models:
+
+- **Runtime modding (recommended).** Patch your `vcb.pck` **once** with the
+  [Godot Mod Loader](https://godotengine.org/asset-library/asset/1938) so the game can load
+  many mods at runtime from a `mods/` folder — the original game files are never replaced.
+  See **[docs/MODDING.md](docs/MODDING.md)** and **[docs/PATCHER_DESIGN.md](docs/PATCHER_DESIGN.md)**.
+- **Whole‑pck swap (legacy).** Swap a mod's `vcb.pck` into your install (one mod at a time),
+  keeping a one‑time backup of your original so you can always go back.
 
 Single self-contained executable — no installer, no runtime, no Python. Windows + Linux.
 
 <!-- A screenshot can go here once the UI is built for your platform. -->
 
-## What it does
+## Runtime modding (patch + Mod Loader)
+
+Click **Enable modding** and the launcher snapshots your pristine `vcb.pck` to
+`vcb.pck.original`, then writes a patched `vcb.pck` with the Godot Mod Loader baked in
+(original game files copied verbatim — no decryption key needed). Drop Mod Loader mods
+(`.zip`) into the game's `mods/` folder and launch. **Disable** restores the original;
+**Re‑apply** re‑patches after a Steam update. Full player + mod‑author guide:
+**[docs/MODDING.md](docs/MODDING.md)**.
+
+## Whole‑pck swap (legacy)
 
 - **Auto-detects** your Steam copy of the game (scans every Steam library folder for the
   one holding `vcb.pck` / the `vcb` executable). You can also point it at the folder
@@ -108,6 +124,13 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
 
 - `src/pck.rs` — a tiny reader for the Godot `.pck` format; extracts `res://mod.json`
   from a file or from bytes (for `.pck`s inside a zip).
+- `src/pckbuild.rs` — reads a full Godot 3.x pck directory and **writes** a new one (used to
+  patch `vcb.pck`, copying original files verbatim).
+- `src/projbin.rs` — reads and patches the embedded `project.binary` (adds the Mod Loader
+  autoloads + merges its `class_name` globals) via a minimal Variant codec.
+- `src/patch.rs` — orchestrates runtime modding: snapshot → inject the (embedded) Mod
+  Loader → repack; enable/disable/re‑apply. The Mod Loader is vendored under
+  `vendor/godot-mod-loader/` and embedded by `build.rs`.
 - `src/archive.rs` — zipped-mod support: reads metadata from a `.zip` and extracts its
   bundled `.pck` on activation.
 - `src/meta.rs` — the `mod.json` schema + embedded/sidecar/zip lookup.

@@ -7,7 +7,10 @@ mod config;
 mod icon;
 mod install;
 mod meta;
+mod patch;
 mod pck;
+mod pckbuild;
+mod projbin;
 mod scan;
 mod steam;
 
@@ -53,6 +56,7 @@ struct LauncherApp {
     mods: Vec<scan::ModEntry>,
     selected: Sel,
     active: install::Active,
+    modding_on: bool,
     status: String,
     status_error: bool,
 }
@@ -75,6 +79,7 @@ impl LauncherApp {
             mods: Vec::new(),
             selected: Sel::None,
             active: install::Active::Missing,
+            modding_on: false,
             status: String::new(),
             status_error: false,
         };
@@ -92,6 +97,7 @@ impl LauncherApp {
         }
         app.refresh_mods();
         app.refresh_active();
+        app.refresh_modding();
         app
     }
 
@@ -121,6 +127,53 @@ impl LauncherApp {
         };
     }
 
+    fn refresh_modding(&mut self) {
+        self.modding_on = self
+            .game_dir
+            .as_ref()
+            .map(|d| patch::modding_enabled(d))
+            .unwrap_or(false);
+    }
+
+    /// Patch the game's `vcb.pck` with the Godot Mod Loader (keeping the pristine
+    /// original as `vcb.pck.original`). Refuses if the current pck looks like a mod and
+    /// there's no clean backup, so we never bake a mod in as the "original".
+    fn enable_modding(&mut self) {
+        let Some(dir) = self.game_dir.clone() else {
+            self.set_err("Set the game folder first.");
+            return;
+        };
+        let pck = patch::pck_path(&dir);
+        let has_backup = patch::backup_path(&dir).is_file();
+        if !has_backup && !patch::is_patched(&pck) && !install::is_vanilla(&pck) {
+            self.set_err("Your current vcb.pck looks like a mod. Revert to vanilla (or Steam → Verify integrity of game files) first, then enable modding.");
+            return;
+        }
+        match patch::enable_modding(&dir) {
+            Ok(()) => {
+                self.refresh_modding();
+                self.refresh_active();
+                self.set_ok("Modding enabled — vcb.pck patched with the Godot Mod Loader. Drop Mod Loader mods (.zip) into the game's mods/ folder.");
+            }
+            Err(e) => self.set_err(format!("Couldn't enable modding: {}", e)),
+        }
+    }
+
+    fn disable_modding(&mut self) {
+        let Some(dir) = self.game_dir.clone() else {
+            self.set_err("Set the game folder first.");
+            return;
+        };
+        match patch::disable_modding(&dir) {
+            Ok(()) => {
+                self.refresh_modding();
+                self.refresh_active();
+                self.set_ok("Modding disabled — restored the original vcb.pck.");
+            }
+            Err(e) => self.set_err(format!("Couldn't disable modding: {}", e)),
+        }
+    }
+
     fn detect_game(&mut self) {
         match steam::find_game_dir() {
             Some(d) => {
@@ -128,6 +181,7 @@ impl LauncherApp {
                 self.game_dir = Some(d.clone());
                 config::save_game_dir(&d);
                 self.refresh_active();
+                self.refresh_modding();
                 self.set_ok(format!("Found the game at {}", d.display()));
             }
             None => self.set_err("No Steam install found in the usual locations."),
@@ -147,6 +201,7 @@ impl LauncherApp {
         self.game_dir = Some(p.clone());
         config::save_game_dir(&p);
         self.refresh_active();
+        self.refresh_modding();
         self.set_ok(format!("Using game folder {} (remembered for next time)", p.display()));
     }
 
@@ -217,6 +272,10 @@ impl eframe::App for LauncherApp {
         egui::TopBottomPanel::top("header")
             .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(18.0, 14.0)))
             .show(ctx, |ui| self.header_ui(ui));
+
+        egui::TopBottomPanel::top("modding")
+            .frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::symmetric(18.0, 10.0)))
+            .show(ctx, |ui| self.modding_ui(ui));
 
         egui::TopBottomPanel::bottom("status")
             .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(18.0, 8.0)))
@@ -292,6 +351,58 @@ impl LauncherApp {
                 self.detect_game();
             }
         });
+    }
+
+    fn modding_ui(&mut self, ui: &mut egui::Ui) {
+        let has_game = self.game_dir.is_some();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Runtime modding").size(14.0).strong().color(TEXT));
+            if self.modding_on {
+                ui.label(egui::RichText::new("● enabled").size(12.0).color(ACCENT))
+                    .on_hover_text("vcb.pck is patched with the Godot Mod Loader");
+            } else {
+                ui.label(egui::RichText::new("● disabled").size(12.0).color(DIM));
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.modding_on {
+                    if ui
+                        .button("📁 Mods folder")
+                        .on_hover_text("Open the game's mods/ folder — drop Mod Loader mods (.zip) here")
+                        .clicked()
+                    {
+                        if let Some(d) = self.game_dir.clone() {
+                            open_path(&patch::mods_dir(&d));
+                        }
+                    }
+                    if ui
+                        .button("Re-apply")
+                        .on_hover_text("Re-patch from the pristine original (e.g. after a Steam game update)")
+                        .clicked()
+                    {
+                        self.enable_modding();
+                    }
+                    if ui
+                        .button(egui::RichText::new("Disable").color(RED))
+                        .on_hover_text("Restore the original vcb.pck")
+                        .clicked()
+                    {
+                        self.disable_modding();
+                    }
+                } else if ui
+                    .add_enabled(has_game, accent_widget("Enable modding"))
+                    .on_hover_text("Patch vcb.pck with the Godot Mod Loader so it can load mods at runtime (keeps a pristine backup)")
+                    .clicked()
+                {
+                    self.enable_modding();
+                }
+            });
+        });
+        ui.label(
+            egui::RichText::new("Patches vcb.pck once with the Godot Mod Loader (the original is kept safe). Mods are Mod Loader packages (.zip) dropped into the game's mods/ folder — see docs/MODDING.md.")
+                .size(11.0)
+                .color(DIM),
+        );
     }
 
     fn status_ui(&mut self, ui: &mut egui::Ui) {
@@ -558,11 +669,14 @@ fn card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, active: 
 }
 
 fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(egui::RichText::new(text).color(egui::Color32::BLACK).strong())
-            .fill(ACCENT)
-            .rounding(egui::Rounding::same(6.0)),
-    )
+    ui.add(accent_widget(text))
+}
+
+/// The accent-filled button as a standalone widget (for `add_enabled`).
+fn accent_widget(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(egui::Color32::BLACK).strong())
+        .fill(ACCENT)
+        .rounding(egui::Rounding::same(6.0))
 }
 
 /// The app's little logo — a circuit chip with pins and a lit central via — drawn as

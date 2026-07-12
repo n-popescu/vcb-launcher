@@ -1,0 +1,5 @@
+COMMIT=92cd37ba0136e9d983b6b307900600cfd6705c32
+VERSION=6.3.0
+SOURCE=https://godotengine.org/asset-library/asset/1938
+UPSTREAM=https://github.com/GodotModding/godot-mod-loader
+LICENSE=CC0-1.0
