@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=VCB Mod Launcher
+Comment=Swap Virtual Circuit Board mods in and out of your Steam install
+Exec=vcb-launcher
+Icon=vcb-launcher
+Terminal=false
+Categories=Game;Utility;

@@ -117,7 +117,15 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
 - `src/install.rs` — backup / restore / install (`.pck` and `.zip`) and "which mod is
   active" detection.
 - `src/scan.rs` — finds `.pck`s and zipped mods under `mods/` and reads their metadata.
-- `src/icon.rs` — the procedurally-drawn window/taskbar icon.
+- `src/icon_render.rs` — a dependency-free rasteriser for the procedurally-drawn icon
+  (the "circuit chip with a lit via" motif), size-parametric so one source renders every
+  resolution.
+- `src/icon.rs` — wraps `icon_render` as the runtime egui window/taskbar icon.
+- `build.rs` + `src/bin/gen_icons.rs` — bake that same icon **into the executable at build
+  time** so it shows on the app before it's launched: `build.rs` embeds a multi-resolution
+  `.ico` as the Windows `.exe` icon; CI wraps the macOS binary in a `.app` with a generated
+  `.icns` and ships a `.desktop` + `.png` on Linux (a bare ELF can't embed an icon). Still
+  no image file committed — it's all generated from `icon_render`.
 - `src/main.rs` — the [egui](https://github.com/emilk/egui) UI.
 
 Built with Rust + egui/eframe, so the whole app is one portable binary with no external

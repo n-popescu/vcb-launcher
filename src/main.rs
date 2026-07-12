@@ -5,6 +5,7 @@
 mod archive;
 mod config;
 mod icon;
+mod icon_render;
 mod install;
 mod meta;
 mod pck;
