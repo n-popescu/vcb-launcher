@@ -1,17 +1,21 @@
-//! Build script: embed the vendored Godot Mod Loader addon and the bundled Mod Menu mod
-//! into the binary.
+//! Build script. Two jobs, both keeping the launcher a single self-contained binary:
 //!
-//! Every file under `vendor/godot-mod-loader/addons/` is turned into an
-//! `(res_path, bytes)` pair so the launcher can inject the whole addon into a
-//! patched `vcb.pck` at runtime — keeping the launcher a single self-contained
-//! executable. The `res_path` is the path the file must live at inside the pck,
-//! e.g. `vendor/…/addons/mod_loader/mod_loader.gd` → `res://addons/mod_loader/mod_loader.gd`.
+//! 1. Embed the vendored Godot Mod Loader addon and the bundled Mod Menu mod as byte
+//!    arrays (`embed_addon` / `embed_mod_menu`), so the launcher can inject them into a
+//!    patched `vcb.pck` / write them into the game's `mods/` folder at runtime.
+//!      - `vendor/godot-mod-loader/addons/…` → `res://addons/…`
+//!      - `vendor/mod-menu/mods-unpacked/…`  → `mods-unpacked/…` (inside the emitted zip)
 //!
-//! Every file under `vendor/mod-menu/mods-unpacked/` is turned into an
-//! `(zip_path, bytes)` pair so the launcher can write the Mod Menu into the game's
-//! `mods/` folder as a `.zip` on enable-modding. The `zip_path` is the path inside that
-//! zip, e.g. `vendor/mod-menu/mods-unpacked/npopescu-ModMenu/manifest.json`
-//! → `mods-unpacked/npopescu-ModMenu/manifest.json`.
+//! 2. Bake the launcher's procedural icon into the executable so it shows on the app file
+//!    *before* it is launched, not just in the running window/taskbar. The art comes from
+//!    the same rasteriser the app uses at runtime (`src/icon_render.rs`, pulled in with
+//!    `include!` so there is still no image file to ship). On Windows this embeds a
+//!    multi-resolution `.ico` as the `.exe` icon resource (what Explorer shows). A bare
+//!    macOS/Linux binary can't carry a file icon, so there is nothing to embed there —
+//!    macOS uses a `.app` bundle and Linux a `.desktop` file, both produced from the
+//!    `gen-icons` helper in CI; we still write the `.ico` into OUT_DIR on every target.
+
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/icon_render.rs"));
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,6 +26,13 @@ fn main() {
 
     embed_addon(&manifest, &out_dir);
     embed_mod_menu(&manifest, &out_dir);
+
+    // Icon: encode a multi-resolution .ico and, on Windows, embed it as the .exe icon.
+    println!("cargo:rerun-if-changed=src/icon_render.rs");
+    println!("cargo:rerun-if-changed=build.rs");
+    let ico_path = out_dir.join("vcb-launcher.ico");
+    write_ico(&ico_path);
+    embed_windows_icon(&ico_path);
 }
 
 /// Embed the Godot Mod Loader addon (paths become `res://addons/...`).
@@ -91,3 +102,30 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
+
+/// Encode the icon as a multi-resolution `.ico` (16..256 px) from the procedural source.
+fn write_ico(path: &Path) {
+    let mut dir = ico::IconDir::new(ico::ResourceType::Icon);
+    for &n in &[16usize, 24, 32, 48, 64, 128, 256] {
+        let image = ico::IconImage::from_rgba_data(n as u32, n as u32, render_rgba(n));
+        dir.add_entry(ico::IconDirEntry::encode(&image).expect("encode .ico entry"));
+    }
+    let file = std::fs::File::create(path).expect("create .ico");
+    dir.write(file).expect("write .ico");
+}
+
+// `winresource` is a Windows-host build-dependency (see Cargo.toml), so gate the reference
+// to host-Windows compilation. CI builds the Windows target natively on a Windows runner,
+// where host == target, so this runs exactly when the .exe is being produced.
+#[cfg(windows)]
+fn embed_windows_icon(ico_path: &Path) {
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(ico_path.to_str().expect("utf-8 ico path"));
+    if let Err(e) = res.compile() {
+        // Don't fail the build over the cosmetic icon; warn so it's visible in the log.
+        println!("cargo:warning=could not embed the Windows icon resource: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_icon(_ico_path: &Path) {}
