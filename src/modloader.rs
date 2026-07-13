@@ -112,7 +112,7 @@ fn parse_zipball(json: &str) -> Option<String> {
 
 /// Query the Mod Loader's latest GitHub release (tag → version, plus the source zipball URL).
 pub fn check_latest() -> Result<Latest, String> {
-    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/latest");
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/tag/v6.3.0");
     let json = net::get_text(&url, GH_ACCEPT)?;
     let release: Release = update::parse_release(&json)
         .ok_or_else(|| "couldn't parse the Mod Loader release response".to_string())?;
