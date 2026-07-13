@@ -24,6 +24,10 @@ side and the original stays intact.
    into it.
 3. Press **▶ Launch game**. The Mod Loader loads every mod at startup.
 
+> Enabling modding also installs a small built-in **mod list** mod, so **Options ▸ Mods**
+> in-game shows every installed mod (name, version, author, description). It's refreshed on
+> **Re‑apply**.
+
 To go back to the unmodified game, click **Disable** (or the header's **⟲ Revert to
 vanilla**) — it restores `vcb.pck.original`. After a Steam update re‑downloads `vcb.pck`,
 click **Re‑apply** to patch the fresh copy again.

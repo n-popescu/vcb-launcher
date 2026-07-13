@@ -8,6 +8,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod archive;
+mod bundled;
 mod config;
 mod icon;
 mod install;
@@ -204,7 +205,7 @@ impl LauncherApp {
             Ok(()) => {
                 self.refresh_modding();
                 self.refresh_active();
-                self.set_ok("Modding enabled — vcb.pck patched with the Godot Mod Loader. Drop Mod Loader mods (.zip) into the game's mods/ folder, then Launch game.");
+                self.set_ok("Modding enabled — vcb.pck patched with the Godot Mod Loader. The in-game mod list (Options ▸ Mods) is installed automatically. Drop more Mod Loader mods (.zip) into the game's mods/ folder, then Launch game.");
             }
             Err(e) => self.set_err(format!("Couldn't enable modding: {}", e)),
         }
