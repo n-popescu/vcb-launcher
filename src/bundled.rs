@@ -79,6 +79,28 @@ mod tests {
     }
 
     #[test]
+    fn manifest_matches_mod_loader_schema() {
+        // Mod Loader 6.3.0 refuses to load a mod whose manifest is missing the nested
+        // `extra.godot` block (root keys + extra.godot keys are required). If this ever
+        // regresses, the bundled mod silently fails to load in-game — so assert it here.
+        let (_, bytes) = EMBEDDED_MOD_MENU_FILES
+            .iter()
+            .find(|(n, _)| n.ends_with("/manifest.json"))
+            .expect("manifest embedded");
+        let m: serde_json::Value = serde_json::from_slice(bytes).expect("manifest is valid JSON");
+        for key in ["name", "namespace", "version_number", "website_url", "description", "dependencies", "extra"] {
+            assert!(m.get(key).is_some(), "manifest missing required root key: {key}");
+        }
+        let godot = m
+            .get("extra")
+            .and_then(|e| e.get("godot"))
+            .expect("manifest.extra.godot is required by the Mod Loader");
+        for key in ["authors", "compatible_mod_loader_version", "compatible_game_version"] {
+            assert!(godot.get(key).is_some(), "manifest.extra.godot missing required key: {key}");
+        }
+    }
+
+    #[test]
     fn install_writes_the_zip() {
         let dir = std::env::temp_dir().join(format!("vcbl_bundled_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

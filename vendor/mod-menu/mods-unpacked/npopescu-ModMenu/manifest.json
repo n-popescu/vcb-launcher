@@ -2,15 +2,20 @@
 	"name": "ModMenu",
 	"namespace": "npopescu",
 	"version_number": "1.0.0",
-	"description": "Adds a Mods button to the Options menu that opens a window listing every installed mod with its name, version, authors and description - read live from the Godot Mod Loader.",
 	"website_url": "https://github.com/n-popescu/vcb-mp",
+	"description": "Adds a Mods button to the Options menu that opens a window listing every installed mod with its name, version, authors and description - read live from the Godot Mod Loader.",
 	"dependencies": [],
-	"incompatibilities": [],
-	"authors": ["n-popescu"],
-	"compatible_mod_loader_version": ["6.3.0"],
-	"compatible_game_version": ["Godot 3.5.1"],
-	"config_schema": {},
-	"description_rich": "",
-	"tags": [],
-	"config_defaults": {}
+	"extra": {
+		"godot": {
+			"authors": ["n-popescu"],
+			"compatible_mod_loader_version": ["6.3.0"],
+			"compatible_game_version": ["Godot 3.5.1"],
+			"incompatibilities": [],
+			"optional_dependencies": [],
+			"load_before": [],
+			"description_rich": "",
+			"tags": [],
+			"config_schema": {}
+		}
+	}
 }
