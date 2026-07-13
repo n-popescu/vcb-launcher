@@ -1,7 +1,7 @@
 {
 	"name": "ModMenu",
 	"namespace": "npopescu",
-	"version_number": "1.0.0",
+	"version_number": "1.1.0",
 	"website_url": "https://github.com/n-popescu/vcb-mp",
 	"description": "Adds a Mods button to the Options menu that opens a window listing every installed mod with its name, version, authors and description - read live from the Godot Mod Loader.",
 	"dependencies": [],

@@ -143,26 +143,52 @@ func _get_mods() -> Array:
 	if store == null:
 		return out
 	var mod_data = store.get("mod_data")
-	if typeof(mod_data) != TYPE_DICTIONARY:
-		return out
-	for mod_id in mod_data:
-		var md = mod_data[mod_id]
-		if md == null:
-			continue
-		var mani = md.get("manifest")
-		if mani == null:
-			continue
-		out.append({
-			"id": str(mod_id),
-			"name": _s(mani.get("name"), str(mod_id)),
-			"version": _s(mani.get("version_number"), ""),
-			"description": _s(mani.get("description"), ""),
-			"authors": _join(mani.get("authors")),
-			"website": _s(mani.get("website_url"), ""),
-			"dependencies": _join(mani.get("dependencies")),
-		})
+	if typeof(mod_data) == TYPE_DICTIONARY:
+		for mod_id in mod_data:
+			var md = mod_data[mod_id]
+			if md == null:
+				continue
+			var mani = md.get("manifest")
+			if mani == null:
+				continue
+			out.append({
+				"id": str(mod_id),
+				"name": _s(mani.get("name"), str(mod_id)),
+				"version": _s(mani.get("version_number"), ""),
+				"description": _s(mani.get("description"), ""),
+				"authors": _join(mani.get("authors")),
+				"website": _s(mani.get("website_url"), ""),
+				"dependencies": _join(mani.get("dependencies")),
+			})
 	out.sort_custom(self, "_sort_by_name")
+	# The Mod Loader is itself the "mod" that discovers and loads every other mod, so pin it to
+	# the top of the list (above the alphabetically-sorted user mods).
+	var loader := _mod_loader_entry(store)
+	if not loader.empty():
+		out.push_front(loader)
 	return out
+
+# Synthesize a list entry for the Godot Mod Loader itself. Its version is read from the
+# ModLoaderStore script's MODLOADER_VERSION constant (via the constant map, so a missing/renamed
+# constant can never crash the window).
+func _mod_loader_entry(store) -> Dictionary:
+	if store == null:
+		return {}
+	var version := ""
+	var scr = store.get_script()
+	if scr != null and scr.has_method("get_script_constant_map"):
+		var consts = scr.get_script_constant_map()
+		if typeof(consts) == TYPE_DICTIONARY and consts.has("MODLOADER_VERSION"):
+			version = str(consts["MODLOADER_VERSION"])
+	return {
+		"id": "GodotModding-ModLoader",
+		"name": "Godot Mod Loader",
+		"version": version,
+		"description": "The runtime mod loader that discovers and loads the mods listed below.",
+		"authors": "KANA, GodotModding",
+		"website": "https://github.com/GodotModding/godot-mod-loader",
+		"dependencies": "",
+	}
 
 func _sort_by_name(a: Dictionary, b: Dictionary) -> bool:
 	return String(a.get("name", "")).to_lower() < String(b.get("name", "")).to_lower()
