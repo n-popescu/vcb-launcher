@@ -14,15 +14,18 @@ mod icon;
 mod icon_render;
 mod install;
 mod meta;
+mod net;
 mod patch;
 mod pck;
 mod pckbuild;
 mod projbin;
 mod scan;
 mod steam;
+mod update;
 
 use eframe::egui;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 // --- palette --------------------------------------------------------------------------
 // A calm, slightly cool dark theme. Two background tones give the header/status bars a
@@ -87,6 +90,15 @@ struct LauncherApp {
     legacy_warning_open: bool,       // currently showing the warning overlay
     legacy_warning_acked: bool,      // acknowledged for this session already
     dont_show_legacy_again: bool,    // the checkbox in the warning
+    // Launcher self-update state.
+    launcher_check: Arc<Mutex<update::LauncherCheck>>, // startup version check (worker-filled)
+    apply_phase: Arc<Mutex<update::ApplyPhase>>,       // download/apply progress (worker-filled)
+    skip_launcher_version: Option<String>, // persisted "don't remind me about this version"
+    update_open: bool,                     // the update prompt is showing
+    update_acked: bool,                    // dismissed for this session
+    update_info: Option<update::LauncherUpdate>, // the offered update, cached from the check
+    dont_show_update_again: bool,          // the checkbox in the update prompt
+    update_error: Option<String>,          // last apply failure, shown inside the prompt
 }
 
 impl LauncherApp {
@@ -103,6 +115,15 @@ impl LauncherApp {
         let from_config = remembered.is_some();
         let game_dir = remembered.or_else(steam::find_game_dir);
 
+        // A stale <exe>.old can linger after a previous self-update (a running Windows exe
+        // can only be renamed, not deleted); clear it now that we're the fresh process.
+        update::cleanup_stale();
+
+        let launcher_check = Arc::new(Mutex::new(update::LauncherCheck::Checking));
+        let apply_phase = Arc::new(Mutex::new(update::ApplyPhase::Idle));
+        // Check GitHub for a newer launcher in the background so the window opens instantly.
+        update::spawn_launcher_check(launcher_check.clone(), cc.egui_ctx.clone());
+
         let mut app = LauncherApp {
             game_dir,
             game_dir_input: String::new(),
@@ -117,6 +138,14 @@ impl LauncherApp {
             legacy_warning_open: false,
             legacy_warning_acked: false,
             dont_show_legacy_again: cfg.hide_legacy_warning,
+            launcher_check,
+            apply_phase,
+            skip_launcher_version: cfg.skip_launcher_version.clone(),
+            update_open: false,
+            update_acked: false,
+            update_info: None,
+            dont_show_update_again: false,
+            update_error: None,
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
@@ -185,6 +214,84 @@ impl LauncherApp {
         if self.dont_show_legacy_again != self.hide_legacy_warning {
             self.hide_legacy_warning = self.dont_show_legacy_again;
             config::save_hide_legacy_warning(self.hide_legacy_warning);
+        }
+    }
+
+    /// Per-frame: surface a pending launcher update as a prompt, and act on any finished
+    /// download/apply (relaunch, inform, or report failure).
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        // Open the update prompt once, the first time the background check reports one that
+        // the user hasn't chosen to skip.
+        if !self.update_acked && !self.update_open {
+            let snapshot = self.launcher_check.lock().unwrap().clone();
+            match snapshot {
+                update::LauncherCheck::Available(u) => {
+                    if self.skip_launcher_version.as_deref() == Some(u.latest.as_str()) {
+                        self.update_acked = true; // already declined this exact version
+                    } else {
+                        self.dont_show_update_again = false;
+                        self.update_info = Some(u);
+                        self.update_open = true;
+                    }
+                }
+                // A failed check is non-fatal and silent (no network / rate-limited / no
+                // release yet); note it for diagnostics and stop polling this run.
+                update::LauncherCheck::Error(e) => {
+                    eprintln!("[vcb-launcher] update check failed: {e}");
+                    self.update_acked = true;
+                }
+                update::LauncherCheck::UpToDate => self.update_acked = true,
+                update::LauncherCheck::Checking => {}
+            }
+        }
+
+        // React to a completed apply.
+        let phase = self.apply_phase.lock().unwrap().clone();
+        match phase {
+            update::ApplyPhase::Relaunch(exe) => {
+                // The binary was swapped in place — start the new one and quit so it takes over.
+                *self.apply_phase.lock().unwrap() = update::ApplyPhase::Idle;
+                let _ = std::process::Command::new(&exe).spawn();
+                std::process::exit(0);
+            }
+            update::ApplyPhase::Message(m) => {
+                *self.apply_phase.lock().unwrap() = update::ApplyPhase::Idle;
+                self.set_ok(m);
+                self.close_update_prompt();
+            }
+            update::ApplyPhase::Failed(e) => {
+                *self.apply_phase.lock().unwrap() = update::ApplyPhase::Idle;
+                // Show it inside the prompt (the dim overlay hides the status bar) and leave
+                // the prompt open so the user can retry or cancel.
+                self.update_error = Some(e);
+            }
+            update::ApplyPhase::Idle | update::ApplyPhase::Working => {}
+        }
+        let _ = ctx;
+    }
+
+    /// Close the update prompt, persisting the "don't show again until the next version"
+    /// choice: ticked → skip this exact version; unticked → clear any skip (prompt returns
+    /// next start, which is when the check runs).
+    fn close_update_prompt(&mut self) {
+        let skip = if self.dont_show_update_again {
+            self.update_info.as_ref().map(|u| u.latest.clone())
+        } else {
+            None
+        };
+        if skip != self.skip_launcher_version {
+            self.skip_launcher_version = skip.clone();
+            config::save_skip_launcher_version(skip);
+        }
+        self.update_open = false;
+        self.update_acked = true;
+        self.update_error = None;
+    }
+
+    fn start_launcher_update(&mut self, ctx: &egui::Context) {
+        if let Some(asset) = self.update_info.as_ref().and_then(|u| u.asset.clone()) {
+            self.update_error = None;
+            update::spawn_apply(asset, self.apply_phase.clone(), ctx.clone());
         }
     }
 
@@ -322,6 +429,8 @@ impl LauncherApp {
 
 impl eframe::App for LauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_updates(ctx);
+
         egui::TopBottomPanel::top("header")
             .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(18.0, 14.0)))
             .show(ctx, |ui| self.header_ui(ui));
@@ -342,6 +451,10 @@ impl eframe::App for LauncherApp {
         // The legacy-mode warning renders as a centered modal over everything.
         if self.legacy_warning_open {
             self.legacy_warning_modal(ctx);
+        }
+        // The self-update prompt (also a centered modal).
+        if self.update_open {
+            self.update_modal(ctx);
         }
     }
 }
@@ -903,6 +1016,116 @@ impl LauncherApp {
               });
             });
     }
+
+    // ============================ Self-update prompt ============================
+    fn update_modal(&mut self, ctx: &egui::Context) {
+        let Some(info) = self.update_info.clone() else {
+            self.update_open = false;
+            return;
+        };
+        let working = matches!(*self.apply_phase.lock().unwrap(), update::ApplyPhase::Working);
+        let has_asset = info.asset.is_some();
+
+        // Dim the window behind the dialog and swallow clicks.
+        let screen = ctx.screen_rect();
+        egui::Area::new("update_dim".into())
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter().rect_filled(rect, egui::Rounding::ZERO, egui::Color32::from_black_alpha(150));
+                let _ = resp;
+            });
+
+        egui::Area::new("update_prompt".into())
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+              egui::Frame::none()
+                    .fill(PANEL)
+                    .rounding(egui::Rounding::same(12.0))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2a, 0x33, 0x3d)))
+                    .inner_margin(egui::Margin::same(22.0))
+                    .shadow(egui::epaint::Shadow {
+                        offset: egui::vec2(0.0, 6.0),
+                        blur: 24.0,
+                        spread: 0.0,
+                        color: egui::Color32::from_black_alpha(120),
+                    })
+              .show(ui, |ui| {
+                ui.set_max_width(460.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("⬆").size(20.0).color(ACCENT));
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Launcher update available").size(17.0).strong().color(TEXT));
+                });
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "You're running {}. Version {} is available.",
+                        info.current, info.latest
+                    ))
+                    .size(13.0)
+                    .color(DIM),
+                );
+                ui.add_space(6.0);
+                if has_asset {
+                    ui.label(
+                        egui::RichText::new(if cfg!(target_os = "macos") {
+                            "Update now downloads the new build and reveals it in Finder — unzip it and replace the app to finish."
+                        } else {
+                            "Update now downloads the new build, swaps it in, and relaunches the launcher."
+                        })
+                        .size(12.0)
+                        .color(FAINT),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("No prebuilt download was found for this platform — open the releases page to grab it.")
+                            .size(12.0)
+                            .color(YELLOW),
+                    );
+                }
+
+                if working {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Downloading…").size(12.0).color(DIM));
+                    });
+                } else if let Some(err) = &self.update_error {
+                    ui.add_space(10.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("⚠").size(12.0).color(RED));
+                        ui.label(egui::RichText::new(err).size(12.0).color(RED));
+                    });
+                }
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    ui.add_enabled(!working, egui::Checkbox::without_text(&mut self.dont_show_update_again));
+                    ui.label(egui::RichText::new("Don't show again until the next version").size(12.0).color(DIM));
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if has_asset {
+                            if ui.add_enabled(!working, primary_button("Update now")).clicked() {
+                                self.start_launcher_update(ctx);
+                            }
+                        } else if ui.add_enabled(!working, primary_button("Open releases page")).clicked() {
+                            open_url(&info.html_url);
+                        }
+                        if ui.add_enabled(!working, ghost_button("Cancel")).clicked() {
+                            self.close_update_prompt();
+                        }
+                    });
+                });
+              });
+            });
+    }
 }
 
 // --- widgets --------------------------------------------------------------------------
@@ -1080,4 +1303,14 @@ fn open_path(path: &Path) {
     let _ = std::process::Command::new("open").arg(path).spawn();
     #[cfg(target_os = "linux")]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
+/// Open a URL in the default browser.
+fn open_url(url: &str) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
