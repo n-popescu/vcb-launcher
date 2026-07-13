@@ -124,6 +124,25 @@ The Mod Loader is vendored under [`vendor/godot-mod-loader/`](../vendor/godot-mo
 and embedded into the launcher at build time (`build.rs`) so the app stays a single portable
 binary. It is CC0; its `LICENSE` files are kept alongside the sources.
 
+### Keeping the Mod Loader current (web update)
+
+The embedded copy is a **seed**, not a hard version pin. `src/modloader.rs` can pull a newer
+Mod Loader straight from its GitHub releases into a `modloader/` folder next to the launcher,
+and the patcher (`patch::enable_modding_with`) is source‑agnostic — it injects whichever addon
+file set it's handed (cached download if present, else the seed). So the patched `vcb.pck` can
+track the latest Mod Loader without rebuilding the launcher.
+
+Version discovery is uniform: the Mod Loader records `const MODLOADER_VERSION` in
+`addons/mod_loader/mod_loader_store.gd`, so the launcher reads the version applied to a pck,
+the cached copy, and the seed the same way, and compares against the latest GitHub release to
+show *up to date* / *out of date* and offer a one‑click update + re‑apply.
+
+The seed is deliberately kept (rather than removing all embedded bytes) so a fresh, **offline**
+install can still enable modding out of the box; the web copy simply supersedes it when
+available. Needs on‑device verification, like the rest of the patch path: that a downloaded
+release's `addons/**` layout matches (the two autoload scripts + `class_name` globals resolve)
+and that the retail engine loads the freshly‑patched pck.
+
 ## Test coverage
 
 `cargo test` covers: the Variant codec (round‑trip, string padding, autoload ordering, class

@@ -85,12 +85,33 @@ impl From<io::Error> for PatchError {
     }
 }
 
-/// The `class_name` globals declared by the embedded addon, derived by scanning each
-/// `.gd` for its `class_name` / `extends`. These get merged into
-/// `_global_script_classes` so the loader's classes resolve at runtime.
-pub fn embedded_global_classes() -> Vec<GlobalClass> {
+/// The Mod Loader addon file set to inject: `&[(res_path, bytes)]`, the same shape as the
+/// build-time-embedded `EMBEDDED_ADDON_FILES`. A web-downloaded copy (see `modloader.rs`)
+/// is passed in this shape too, so the patch pipeline is source-agnostic.
+pub type Addon<'a> = &'a [(&'a str, &'a [u8])];
+
+/// The Mod Loader addon baked into the launcher at build time — the offline fallback / seed.
+pub fn embedded_addon() -> Addon<'static> {
+    EMBEDDED_ADDON_FILES
+}
+
+/// The Mod Loader `mod_loader_store.gd`, which carries `const MODLOADER_VERSION`.
+pub const MODLOADER_STORE: &str = "res://addons/mod_loader/mod_loader_store.gd";
+
+/// Read the Mod Loader version currently baked into `pck_file` (None if unpatched).
+pub fn applied_version(pck_file: &Path) -> Option<String> {
+    pck::extract_file(pck_file, MODLOADER_STORE)
+        .ok()
+        .flatten()
+        .and_then(|b| crate::modloader::parse_version(&b))
+}
+
+/// The `class_name` globals declared by an addon file set, derived by scanning each `.gd`
+/// for its `class_name` / `extends`. These get merged into `_global_script_classes` so the
+/// loader's classes resolve at runtime.
+pub fn global_classes_for(addon: Addon) -> Vec<GlobalClass> {
     let mut out = Vec::new();
-    for (res_path, bytes) in EMBEDDED_ADDON_FILES {
+    for &(res_path, bytes) in addon {
         if !res_path.ends_with(".gd") {
             continue;
         }
@@ -129,8 +150,17 @@ fn first_token(s: &str) -> String {
         .to_string()
 }
 
-/// Enable modding: patch `<game_dir>/vcb.pck` in place (keeping `vcb.pck.original`).
+/// Enable modding with the built-in (seed) Mod Loader — the offline default, and what the
+/// tests exercise.
 pub fn enable_modding(game_dir: &Path) -> Result<(), PatchError> {
+    enable_modding_with(game_dir, embedded_addon())
+}
+
+/// Enable modding: patch `<game_dir>/vcb.pck` in place (keeping `vcb.pck.original`),
+/// injecting the given Mod Loader `addon` file set. `addon` is either the embedded seed or a
+/// web-downloaded copy (see `modloader.rs`), so a Re-apply / update always bakes in whichever
+/// version the caller selected.
+pub fn enable_modding_with(game_dir: &Path, addon: Addon) -> Result<(), PatchError> {
     let live = pck_path(game_dir);
     let backup = backup_path(game_dir);
 
@@ -154,14 +184,13 @@ pub fn enable_modding(game_dir: &Path) -> Result<(), PatchError> {
         .ok_or(PatchError::BadProjectBinary)?;
     let mut pb = ProjectBinary::parse(&pb_bytes).ok_or(PatchError::BadProjectBinary)?;
     pb.add_autoloads(AUTOLOADS);
-    pb.merge_global_classes(&embedded_global_classes());
+    pb.merge_global_classes(&global_classes_for(addon));
     let patched_pb = pb.to_bytes();
 
     // Which added paths override originals (project.binary + every addon file).
-    let addon_paths: std::collections::HashSet<&str> =
-        EMBEDDED_ADDON_FILES.iter().map(|(p, _)| *p).collect();
+    let addon_paths: std::collections::HashSet<&str> = addon.iter().map(|(p, _)| *p).collect();
 
-    let mut files: Vec<OutFile> = Vec::with_capacity(pck.entries.len() + EMBEDDED_ADDON_FILES.len());
+    let mut files: Vec<OutFile> = Vec::with_capacity(pck.entries.len() + addon.len());
     for e in &pck.entries {
         if e.path == PROJECT_BINARY || addon_paths.contains(e.path.as_str()) {
             continue; // replaced/added below
@@ -172,7 +201,7 @@ pub fn enable_modding(game_dir: &Path) -> Result<(), PatchError> {
         });
     }
     files.push(OutFile { path: PROJECT_BINARY.to_string(), source: Source::Bytes(&patched_pb) });
-    for (res_path, bytes) in EMBEDDED_ADDON_FILES {
+    for &(res_path, bytes) in addon {
         files.push(OutFile { path: res_path.to_string(), source: Source::Bytes(bytes) });
     }
 
@@ -223,7 +252,7 @@ mod tests {
 
     #[test]
     fn derives_known_global_classes() {
-        let classes = embedded_global_classes();
+        let classes = global_classes_for(embedded_addon());
         let by_name = |n: &str| classes.iter().find(|c| c.class == n).cloned();
 
         let log = by_name("ModLoaderLog").expect("ModLoaderLog present");
@@ -356,6 +385,36 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), names.len(), "no duplicate classes after re-patch");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enable_with_custom_addon_source_injects_and_reads_version() {
+        // Patch from an alternative Mod Loader file set (as a web-downloaded copy would be),
+        // not the embedded seed: its files must be injected, its class_name registered, and
+        // its MODLOADER_VERSION readable back out of the pck via applied_version().
+        let dir = make_game_dir("custom_addon");
+        write_fake_vcb_pck(&dir);
+
+        let store = b"extends Node\nconst MODLOADER_VERSION = \"9.9.9\"\n".to_vec();
+        let loader = b"extends Node\n".to_vec();
+        let helper = b"class_name MyModThing\nextends Reference\n".to_vec();
+        let addon: Vec<(&str, &[u8])> = vec![
+            (MODLOADER_STORE, &store),
+            ("res://addons/mod_loader/mod_loader.gd", &loader),
+            ("res://addons/mod_loader/api/thing.gd", &helper),
+        ];
+
+        enable_modding_with(&dir, &addon).unwrap();
+        assert!(modding_enabled(&dir));
+        assert_eq!(applied_version(&pck_path(&dir)).as_deref(), Some("9.9.9"));
+
+        let patched = read_dir(&pck_path(&dir)).unwrap().unwrap();
+        assert!(patched.has("res://addons/mod_loader/api/thing.gd"), "custom addon file injected");
+        let e = patched.find(PROJECT_BINARY).unwrap();
+        let names = crate::projbin::read_global_class_names_for_test(&read_entry(&pck_path(&dir), e));
+        assert!(names.contains(&"MyModThing".to_string()), "custom class registered as global");
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -29,6 +29,13 @@ folder**) and press **▶ Launch game** — the Mod Loader loads every mod at st
 **Disable** restores the original; **Re‑apply** re‑patches after a Steam update. Full
 player + mod‑author guide: **[docs/MODDING.md](docs/MODDING.md)**.
 
+Beside those controls the launcher shows a **Mod Loader** status: *up to date* or *out of
+date*, checked against the [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader)
+releases on startup. The launcher ships with a built‑in Mod Loader as an offline seed, but it
+isn't stuck on that version — when a newer release exists an **Update** button appears that
+downloads it into a `modloader/` folder next to the launcher and re‑applies the patch, so
+`vcb.pck` is always baked with the newest Mod Loader without waiting for a launcher update.
+
 ## Legacy — whole‑pck swap
 
 Everything below lives under the **Legacy** tab. It's the launcher's original model; a
@@ -156,9 +163,14 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
   patch `vcb.pck`, copying original files verbatim).
 - `src/projbin.rs` — reads and patches the embedded `project.binary` (adds the Mod Loader
   autoloads + merges its `class_name` globals) via a minimal Variant codec.
-- `src/patch.rs` — orchestrates runtime modding: snapshot → inject the (embedded) Mod
-  Loader → repack; enable/disable/re‑apply. The Mod Loader is vendored under
-  `vendor/godot-mod-loader/` and embedded by `build.rs`.
+- `src/patch.rs` — orchestrates runtime modding: snapshot → inject a Mod Loader addon file
+  set → repack; enable/disable/re‑apply. The addon set is source‑agnostic
+  (`enable_modding_with`): the embedded seed by default, or a web‑downloaded copy. Also reads
+  the Mod Loader version baked into a pck (`applied_version`).
+- `src/modloader.rs` — the web‑updatable Mod Loader: a `modloader/` cache next to the
+  launcher, GitHub latest‑release lookup + zipball download/extract, and version parsing
+  (`const MODLOADER_VERSION`). The launcher patches from the cached copy when present, else
+  the seed embedded by `build.rs`.
 - `src/bundled.rs` — writes the bundled **Mod Menu** (`Options ▸ Mods`) into the game's
   `mods/` folder on enable. Its files are vendored under `vendor/mod-menu/` and embedded by
   `build.rs`.
