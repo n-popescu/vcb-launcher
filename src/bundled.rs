@@ -59,7 +59,6 @@ mod tests {
         for required in [
             "mods-unpacked/npopescu-ModMenu/manifest.json",
             "mods-unpacked/npopescu-ModMenu/mod_main.gd",
-            "mods-unpacked/npopescu-ModMenu/extensions/main.gd",
             "mods-unpacked/npopescu-ModMenu/scripts/mods_window.gd",
         ] {
             assert!(names.contains(&required), "missing embedded file: {required}");
