@@ -111,6 +111,20 @@ Mods are identified by a `mod.json` the launcher reads in this order:
 The [`vcb-mp`](https://github.com/n-popescu/vcb-mp) mod ships this file
 (see its `MOD_METADATA.md` for how to make sure it's packed into the exported `vcb.pck`).
 
+## Staying up to date
+
+On startup the launcher quietly checks its own GitHub **Releases** for a newer version (in a
+background thread — the window opens instantly, and if you're offline or there's no release
+yet, nothing happens). When a newer version exists it shows a small prompt:
+
+- **Update now** downloads the build for your platform. On **Windows/Linux** (single binary)
+  it swaps the running executable in place and relaunches; on **macOS** it saves the `.app`
+  zip next to the app and reveals it in Finder for you to unzip and replace.
+- **Cancel** dismisses it for this run. Since the check happens at every startup, you'll be
+  reminded again next time you open the launcher.
+- **Don't show again until the next version** stops the prompt for this version only — it
+  returns automatically once an even newer release is out. (Stored in `launcher_config.json`.)
+
 ## Download
 
 CI builds **Linux**, **Windows**, and **macOS** (universal Intel + Apple Silicon) binaries
@@ -153,8 +167,12 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
 - `src/meta.rs` — the `mod.json` schema + embedded/sidecar/zip lookup.
 - `src/steam.rs` — Steam library discovery (Windows registry + common paths; Linux
   native + Flatpak) and game-folder detection.
-- `src/config.rs` — persists the chosen game folder and the legacy-mode warning preference
-  (`launcher_config.json`).
+- `src/config.rs` — persists the chosen game folder, the legacy-mode warning preference, and
+  the skipped-update version (`launcher_config.json`).
+- `src/net.rs` — a tiny blocking HTTPS client (`ureq` + rustls) used by the update checker.
+- `src/update.rs` — the self-updater: checks GitHub Releases for a newer launcher, compares
+  versions, and downloads + swaps in the right per-platform artifact (with unit tests for the
+  version compare and asset selection).
 - `src/install.rs` — backup / restore / install (`.pck` and `.zip`) and "which mod is
   active" detection.
 - `src/scan.rs` — finds `.pck`s and zipped mods under `mods/` and reads their metadata.

@@ -14,6 +14,11 @@ pub struct Config {
     /// popping it every time they open the Legacy tab.
     #[serde(default)]
     pub hide_legacy_warning: bool,
+    /// The launcher version the user chose to skip ("Don't show again until the next
+    /// version") in the update prompt. The prompt reappears only once a *newer* version than
+    /// this shows up; an empty/absent value means "never skipped".
+    #[serde(default)]
+    pub skip_launcher_version: Option<String>,
 }
 
 /// `launcher_config.json` next to the launcher executable.
@@ -49,5 +54,12 @@ pub fn save_game_dir(dir: &Path) {
 pub fn save_hide_legacy_warning(hide: bool) {
     let mut cfg = load();
     cfg.hide_legacy_warning = hide;
+    save(&cfg);
+}
+
+/// Remember (or clear) the launcher version the user asked not to be reminded about.
+pub fn save_skip_launcher_version(version: Option<String>) {
+    let mut cfg = load();
+    cfg.skip_launcher_version = version;
     save(&cfg);
 }

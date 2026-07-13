@@ -25,6 +25,10 @@ serde_json = "1"
 dirs = "5"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 png = "0.17"
+# Tiny blocking HTTP(S) client for the update checker (GitHub Releases API + asset/zip
+# downloads). rustls + bundled webpki roots keeps it cross-platform with no system OpenSSL,
+# so the launcher stays a single portable binary.
+ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
