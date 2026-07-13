@@ -6,6 +6,17 @@ description = "A small, portable GUI mod launcher for Virtual Circuit Board: swa
 license = "MIT"
 repository = "https://github.com/n-popescu/vcb-launcher"
 
+[[bin]]
+name = "vcb-launcher"
+path = "src/main.rs"
+
+# Icon generator used by CI to give the macOS .app an .icns and the Linux build a desktop
+# PNG (Windows embeds its icon at build time via build.rs). It renders from the same
+# procedural source; `png` is only linked into this helper, not the launcher binary.
+[[bin]]
+name = "gen-icons"
+path = "src/bin/gen_icons.rs"
+
 [dependencies]
 eframe = { version = "0.27", default-features = false, features = ["glow", "default_fonts"] }
 egui = "0.27"
@@ -13,9 +24,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+png = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+# Bakes the procedural icon into the executable at build time. `ico` encodes the
+# multi-resolution .ico; on Windows `winresource` embeds it as the .exe icon resource.
+[build-dependencies]
+ico = "0.3"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 # One self-contained, reasonably small release binary.
 [profile.release]

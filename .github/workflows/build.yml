@@ -2,6 +2,12 @@ name: build
 
 # Build the launcher for Linux, Windows and macOS automatically on every commit
 # (any branch), on tags, and on demand. Tagged `v*` pushes also publish a release.
+#
+# The launcher's procedural icon is baked into the executable so it shows before launch:
+#   - Windows: build.rs embeds a multi-resolution .ico as the .exe icon resource.
+#   - macOS:   the universal binary is wrapped in a .app bundle with a generated .icns.
+#   - Linux:   a bare ELF can't embed an icon, so a .desktop + .png ship alongside it for
+#              desktop-menu integration.
 on:
   push:
   pull_request:
@@ -20,13 +26,10 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x86_64
-            artifact: vcb-launcher-linux-x86_64
           - os: windows-latest
             name: windows-x86_64
-            artifact: vcb-launcher-windows-x86_64.exe
           - os: macos-latest
             name: macos-universal
-            artifact: vcb-launcher-macos-universal
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +47,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # --- Linux / Windows: native release build + tests ---
+      # On Windows, build.rs embeds the icon into vcb-launcher.exe here.
       - name: Build & test (Linux/Windows)
         if: runner.os != 'macOS'
         run: |
@@ -61,20 +65,58 @@ jobs:
             target/x86_64-apple-darwin/release/vcb-launcher \
             target/aarch64-apple-darwin/release/vcb-launcher
 
-      - name: Stage binary
+      # --- Package per OS (icon lives on the app, not just the running window) ---
+      - name: Package
         shell: bash
         run: |
           mkdir -p dist
+          cargo run --release --locked --bin gen-icons -- icons
           case "${{ runner.os }}" in
-            Windows) cp target/release/vcb-launcher.exe "dist/${{ matrix.artifact }}" ;;
-            macOS)   cp vcb-launcher-macos            "dist/${{ matrix.artifact }}" ;;
-            *)       cp target/release/vcb-launcher    "dist/${{ matrix.artifact }}" ;;
+            Windows)
+              # The .ico is embedded in the exe by build.rs; ship the single file.
+              cp target/release/vcb-launcher.exe "dist/vcb-launcher-windows-x86_64.exe"
+              ;;
+            Linux)
+              # A bare ELF carries no icon; ship the binary plus desktop-integration files.
+              cp target/release/vcb-launcher "dist/vcb-launcher-linux-x86_64"
+              cp icons/vcb-launcher.png "dist/vcb-launcher.png"
+              cp packaging/vcb-launcher.desktop "dist/vcb-launcher.desktop"
+              ;;
+            macOS)
+              # Wrap the universal binary in a .app bundle so Finder/Dock show the icon.
+              APP="dist/VCB Mod Launcher.app"
+              mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+              cp vcb-launcher-macos "$APP/Contents/MacOS/vcb-launcher"
+              chmod +x "$APP/Contents/MacOS/vcb-launcher"
+              iconutil -c icns "icons/VCB Mod Launcher.iconset" -o "$APP/Contents/Resources/vcb-launcher.icns"
+              cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>VCB Mod Launcher</string>
+            <key>CFBundleDisplayName</key><string>VCB Mod Launcher</string>
+            <key>CFBundleIdentifier</key><string>io.github.n-popescu.vcb-launcher</string>
+            <key>CFBundleVersion</key><string>0.1.0</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>CFBundleExecutable</key><string>vcb-launcher</string>
+            <key>CFBundleIconFile</key><string>vcb-launcher</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+              # Zip the bundle (ditto preserves the bundle structure + resource metadata).
+              ditto -c -k --keepParent "$APP" "dist/vcb-launcher-macos-universal.zip"
+              rm -rf "$APP"
+              ;;
           esac
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          name: vcb-launcher-${{ matrix.name }}
+          path: dist/*
 
   release:
     name: release
