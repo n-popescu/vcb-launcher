@@ -182,6 +182,9 @@ pub fn enable_modding(game_dir: &Path) -> Result<(), PatchError> {
     fs::rename(&tmp, &live)?;
 
     let _ = fs::create_dir_all(mods_dir(game_dir));
+    // Ship the in-game mod list (Options ▸ Mods) out of the box. Best-effort: if it can't be
+    // written, modding still works — the player just won't have the built-in list.
+    let _ = crate::bundled::install_mod_menu(&mods_dir(game_dir));
     Ok(())
 }
 
@@ -293,6 +296,10 @@ mod tests {
         // Pristine original was snapshotted, untouched.
         assert_eq!(fs::read(backup_path(&dir)).unwrap(), original_pck_bytes);
         assert!(mods_dir(&dir).is_dir(), "mods/ folder created");
+        assert!(
+            mods_dir(&dir).join(crate::bundled::MOD_MENU_ZIP).is_file(),
+            "the bundled Mod Menu zip is installed on enable"
+        );
 
         let patched = read_dir(&pck_path(&dir)).unwrap().unwrap();
 
