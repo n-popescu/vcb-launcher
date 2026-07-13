@@ -53,16 +53,16 @@ jobs:
       - name: Build & test (Linux/Windows)
         if: runner.os != 'macOS'
         run: |
-          cargo test --release --locked
-          cargo build --release --locked
+          cargo test --release --offline
+          cargo build --release --offline
 
       # --- macOS: test on the host, then build both arches and fuse a universal binary ---
       - name: Build & test (macOS universal)
         if: runner.os == 'macOS'
         run: |
-          cargo test --release --locked
-          cargo build --release --locked --target x86_64-apple-darwin
-          cargo build --release --locked --target aarch64-apple-darwin
+          cargo test --release --offline
+          cargo build --release --offline --target x86_64-apple-darwin
+          cargo build --release --offline --target aarch64-apple-darwin
           lipo -create -output vcb-launcher-macos \
             target/x86_64-apple-darwin/release/vcb-launcher \
             target/aarch64-apple-darwin/release/vcb-launcher
@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cargo run --release --locked --bin gen-icons -- icons
+          cargo run --release --offline --bin gen-icons -- icons
           case "${{ runner.os }}" in
             Windows)
               # The .ico is embedded in the exe by build.rs; ship the single file.
