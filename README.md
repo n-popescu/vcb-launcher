@@ -53,6 +53,11 @@ anything that supports it.
 
 ## Using it
 
+The launcher opens on the **Runtime modding** tab (the recommended path — see above and
+[docs/MODDING.md](docs/MODDING.md)). The steps below are the **Legacy — whole‑pck swap**
+flow, which lives on the **Legacy** tab (opening it the first time shows a one‑time notice
+that it's the older, best‑effort model).
+
 1. Put the launcher executable anywhere. On first run it creates a `mods/` folder next to
    itself.
 2. Drop mod packages into `mods/`. Each mod is a Godot `.pck`. Because every installed mod
@@ -64,10 +69,10 @@ anything that supports it.
 3. Launch it. On first run it auto-detects the game; after that it reuses the folder you
    last used (remembered in `launcher_config.json`). If it can't find it, paste the game
    folder path up top and press **Use**.
-4. Pick a mod on the left and press **▶ Launch modded** — the launcher copies it in as
-   `vcb.pck` (backing up your original first) and starts the game. **Activate only** just
-   swaps the file if you'd rather launch from Steam. Select **Vanilla game** to
-   **Restore vanilla** or **▶ Launch vanilla**.
+4. Open the **Legacy** tab, pick a mod on the left and press **▶ Launch modded** — the
+   launcher copies it in as `vcb.pck` (backing up your original first) and starts the game.
+   **Activate only** just swaps the file if you'd rather launch from Steam. Select **Vanilla
+   game** to **Restore vanilla** or **▶ Launch vanilla**.
 
 > **One mod at a time.** Activating a mod replaces `vcb.pck`, so exactly one mod is live.
 > Combining mods needs a mod-loader (planned) and more mods to test with.
@@ -144,7 +149,8 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
 - `src/meta.rs` — the `mod.json` schema + embedded/sidecar/zip lookup.
 - `src/steam.rs` — Steam library discovery (Windows registry + common paths; Linux
   native + Flatpak) and game-folder detection.
-- `src/config.rs` — persists the chosen game folder (`launcher_config.json`).
+- `src/config.rs` — persists the chosen game folder and the legacy-mode warning preference
+  (`launcher_config.json`).
 - `src/install.rs` — backup / restore / install (`.pck` and `.zip`) and "which mod is
   active" detection.
 - `src/scan.rs` — finds `.pck`s and zipped mods under `mods/` and reads their metadata.

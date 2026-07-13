@@ -16,13 +16,13 @@ side and the original stays intact.
 
 ## For players
 
-1. Point the launcher at your game folder (it auto‑detects Steam) and click
-   **Enable modding**. This:
+1. On the launcher's **Runtime modding** tab, point it at your game folder (it auto‑detects
+   Steam) and click **Enable modding**. This:
    - copies your pristine `vcb.pck` to `vcb.pck.original` (once), and
    - writes a patched `vcb.pck` that has the Mod Loader baked in.
 2. Click **📁 Mods folder** to open the game's `mods/` folder and drop mod `.zip` files
    into it.
-3. Launch the game. The Mod Loader loads every mod at startup.
+3. Press **▶ Launch game**. The Mod Loader loads every mod at startup.
 
 To go back to the unmodified game, click **Disable** (or the header's **⟲ Revert to
 vanilla**) — it restores `vcb.pck.original`. After a Steam update re‑downloads `vcb.pck`,
