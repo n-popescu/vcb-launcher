@@ -16,8 +16,7 @@ mod packages into a `mods/` folder.
 Its explicit purpose is *modifying existing scripts without altering and redistributing the
 original game files* — the "patch, don't replace" model this task asked for. It's mature
 (used by Brotato, Dome Keeper, Windowkill, …), targets Godot 3.5 (VCB is 3.5.1), is pure
-GDScript, and is CC0 so it can be vendored into the launcher. It needs only two autoload
-singletons and loads mod `.zip`s from `<game>/mods/`.
+GDScript. It needs only two autoload singletons and loads mod `.zip`s from `<game>/mods/`.
 
 ## The shipped game, briefly
 
