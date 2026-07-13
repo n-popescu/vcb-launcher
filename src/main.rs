@@ -1,5 +1,10 @@
-// VCB Mod Launcher — a small, portable GUI that swaps mod `.pck` files in and out of a
-// Steam install of Virtual Circuit Board. See README.md.
+// VCB Mod Launcher — a small, portable GUI for modding Virtual Circuit Board. It supports
+// two models, one per tab:
+//   • Runtime modding (recommended) — patch vcb.pck once with the Godot Mod Loader, then
+//     drop mod .zip files into the game's mods/ folder and launch.
+//   • Legacy (.pck swap) — replace the whole vcb.pck with a modded one, one mod at a time,
+//     keeping a backup of the original.
+// See README.md.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod archive;
@@ -18,20 +23,29 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 
 // --- palette --------------------------------------------------------------------------
-const BG: egui::Color32 = egui::Color32::from_rgb(0x14, 0x18, 0x1d);
-const PANEL: egui::Color32 = egui::Color32::from_rgb(0x1b, 0x21, 0x27);
-const CARD: egui::Color32 = egui::Color32::from_rgb(0x22, 0x29, 0x31);
-const CARD_SEL: egui::Color32 = egui::Color32::from_rgb(0x14, 0x33, 0x2c);
+// A calm, slightly cool dark theme. Two background tones give the header/status bars a
+// gentle separation from the content, and a single mint accent carries the primary
+// actions so the eye always knows where "go" is.
+const BG: egui::Color32 = egui::Color32::from_rgb(0x10, 0x14, 0x19); // app background
+const BG_CONTENT: egui::Color32 = egui::Color32::from_rgb(0x14, 0x18, 0x1e); // content area
+const PANEL: egui::Color32 = egui::Color32::from_rgb(0x1a, 0x20, 0x27); // header / status
+const PANEL_2: egui::Color32 = egui::Color32::from_rgb(0x11, 0x16, 0x1b); // insets (tab track)
+const CARD: egui::Color32 = egui::Color32::from_rgb(0x20, 0x27, 0x30);
+const CARD_HOVER: egui::Color32 = egui::Color32::from_rgb(0x27, 0x30, 0x3a);
+const CARD_SEL: egui::Color32 = egui::Color32::from_rgb(0x15, 0x35, 0x2d);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3b, 0xd1, 0x9e);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(0xe6, 0xe9, 0xee);
-const DIM: egui::Color32 = egui::Color32::from_rgb(0x93, 0x9e, 0xab);
+const ACCENT_DK: egui::Color32 = egui::Color32::from_rgb(0x2b, 0xa5, 0x7c);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(0xe9, 0xed, 0xf1);
+const DIM: egui::Color32 = egui::Color32::from_rgb(0x97, 0xa2, 0xb0);
+const FAINT: egui::Color32 = egui::Color32::from_rgb(0x5c, 0x66, 0x72);
 const RED: egui::Color32 = egui::Color32::from_rgb(0xf0, 0x6a, 0x6a);
+const YELLOW: egui::Color32 = egui::Color32::from_rgb(0xf2, 0xc1, 0x4e);
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([980.0, 640.0])
-            .with_min_inner_size([760.0, 480.0])
+            .with_inner_size([1000.0, 660.0])
+            .with_min_inner_size([780.0, 500.0])
             .with_title("VCB Mod Launcher")
             .with_icon(icon::app_icon()),
         ..Default::default()
@@ -50,6 +64,12 @@ enum Sel {
     Mod(usize),
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum Tab {
+    Runtime,
+    Legacy,
+}
+
 struct LauncherApp {
     game_dir: Option<PathBuf>,
     game_dir_input: String,
@@ -59,15 +79,23 @@ struct LauncherApp {
     modding_on: bool,
     status: String,
     status_error: bool,
+    tab: Tab,
+    // Legacy-mode "reduced support" warning state.
+    hide_legacy_warning: bool,       // persisted preference
+    legacy_warning_open: bool,       // currently showing the warning overlay
+    legacy_warning_acked: bool,      // acknowledged for this session already
+    dont_show_legacy_again: bool,    // the checkbox in the warning
 }
 
 impl LauncherApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
 
+        let cfg = config::load();
         // Prefer the folder the user set last time; only fall back to auto-detection.
-        let remembered = config::load()
+        let remembered = cfg
             .game_dir
+            .clone()
             .map(PathBuf::from)
             .filter(|p| steam::is_game_dir(p));
         let from_config = remembered.is_some();
@@ -82,6 +110,11 @@ impl LauncherApp {
             modding_on: false,
             status: String::new(),
             status_error: false,
+            tab: Tab::Runtime,
+            hide_legacy_warning: cfg.hide_legacy_warning,
+            legacy_warning_open: false,
+            legacy_warning_acked: false,
+            dont_show_legacy_again: cfg.hide_legacy_warning,
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
@@ -135,6 +168,24 @@ impl LauncherApp {
             .unwrap_or(false);
     }
 
+    /// Switch tabs, popping the legacy warning the first time the Legacy tab is opened
+    /// (unless the user asked never to see it again).
+    fn switch_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+        if tab == Tab::Legacy && !self.hide_legacy_warning && !self.legacy_warning_acked {
+            self.legacy_warning_open = true;
+        }
+    }
+
+    fn dismiss_legacy_warning(&mut self) {
+        self.legacy_warning_open = false;
+        self.legacy_warning_acked = true;
+        if self.dont_show_legacy_again != self.hide_legacy_warning {
+            self.hide_legacy_warning = self.dont_show_legacy_again;
+            config::save_hide_legacy_warning(self.hide_legacy_warning);
+        }
+    }
+
     /// Patch the game's `vcb.pck` with the Godot Mod Loader (keeping the pristine
     /// original as `vcb.pck.original`). Refuses if the current pck looks like a mod and
     /// there's no clean backup, so we never bake a mod in as the "original".
@@ -153,7 +204,7 @@ impl LauncherApp {
             Ok(()) => {
                 self.refresh_modding();
                 self.refresh_active();
-                self.set_ok("Modding enabled — vcb.pck patched with the Godot Mod Loader. Drop Mod Loader mods (.zip) into the game's mods/ folder.");
+                self.set_ok("Modding enabled — vcb.pck patched with the Godot Mod Loader. Drop Mod Loader mods (.zip) into the game's mods/ folder, then Launch game.");
             }
             Err(e) => self.set_err(format!("Couldn't enable modding: {}", e)),
         }
@@ -273,23 +324,23 @@ impl eframe::App for LauncherApp {
             .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(18.0, 14.0)))
             .show(ctx, |ui| self.header_ui(ui));
 
-        egui::TopBottomPanel::top("modding")
-            .frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::symmetric(18.0, 10.0)))
-            .show(ctx, |ui| self.modding_ui(ui));
-
         egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(18.0, 8.0)))
+            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(18.0, 9.0)))
             .show(ctx, |ui| self.status_ui(ui));
 
-        egui::SidePanel::left("mods")
-            .resizable(false)
-            .exact_width(320.0)
-            .frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(12.0)))
-            .show(ctx, |ui| self.mods_ui(ui));
-
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(18.0)))
-            .show(ctx, |ui| self.details_ui(ui));
+            .frame(egui::Frame::none().fill(BG_CONTENT).inner_margin(egui::Margin::same(18.0)))
+            .show(ctx, |ui| {
+                match self.tab {
+                    Tab::Runtime => self.runtime_tab(ui),
+                    Tab::Legacy => self.legacy_tab(ui),
+                }
+            });
+
+        // The legacy-mode warning renders as a centered modal over everything.
+        if self.legacy_warning_open {
+            self.legacy_warning_modal(ctx);
+        }
     }
 }
 
@@ -297,52 +348,52 @@ impl LauncherApp {
     fn header_ui(&mut self, ui: &mut egui::Ui) {
         let can_revert = self.game_dir.as_ref().map(|d| install::has_backup(d)).unwrap_or(false);
         ui.horizontal(|ui| {
-            let (logo_rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+            let (logo_rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
             paint_logo(ui.painter(), logo_rect);
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.label(egui::RichText::new("VCB").size(22.0).strong().color(ACCENT));
             ui.label(egui::RichText::new("Mod Launcher").size(22.0).strong().color(TEXT));
 
             // Always-available "go back to the unmodded game" action.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = egui::RichText::new("⟲ Revert to vanilla")
-                    .color(if can_revert { TEXT } else { DIM });
+                    .color(if can_revert { TEXT } else { FAINT });
                 let btn = egui::Button::new(label)
-                    .stroke(egui::Stroke::new(1.0, if can_revert { RED } else { DIM }))
-                    .rounding(egui::Rounding::same(6.0));
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(1.0, if can_revert { RED } else { FAINT }))
+                    .rounding(egui::Rounding::same(7.0));
                 let hover = if can_revert {
                     "Restore the original vcb.pck (vcb.pck.original) — undo any active mod"
                 } else {
-                    "No vanilla backup yet — it's created the first time you activate a mod over a clean install"
+                    "No vanilla backup yet — it's created the first time you activate a legacy mod over a clean install"
                 };
                 if ui.add_enabled(can_revert, btn).on_hover_text(hover).clicked() {
                     self.restore();
                 }
             });
         });
-        ui.add_space(2.0);
-        ui.label(
-            egui::RichText::new("Swap a mod's vcb.pck into your game install and launch it. Your original is backed up automatically. One mod at a time (combining mods is planned).")
-                .size(12.0)
-                .color(DIM),
-        );
-        ui.add_space(10.0);
 
+        ui.add_space(12.0);
+
+        // Game folder row.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Game folder").color(DIM));
+            ui.label(egui::RichText::new("Game folder").size(12.0).color(DIM));
             let found = self.game_dir.as_ref().map(|d| steam::is_game_dir(d)).unwrap_or(false);
             if found {
-                ui.label(egui::RichText::new("●").color(ACCENT));
+                ui.label(egui::RichText::new("●").size(12.0).color(ACCENT))
+                    .on_hover_text("Game folder looks good");
             } else {
-                ui.label(egui::RichText::new("●").color(RED));
+                ui.label(egui::RichText::new("●").size(12.0).color(RED))
+                    .on_hover_text("No vcb.pck / vcb executable found here yet");
             }
         });
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
             let avail = ui.available_width();
             ui.add(
                 egui::TextEdit::singleline(&mut self.game_dir_input)
                     .hint_text("…/steamapps/common/Virtual Circuit Board")
-                    .desired_width(avail - 170.0),
+                    .desired_width(avail - 176.0),
             );
             if ui.button("Use").clicked() {
                 self.set_game_from_input();
@@ -351,77 +402,212 @@ impl LauncherApp {
                 self.detect_game();
             }
         });
+
+        ui.add_space(12.0);
+        self.tab_bar(ui);
     }
 
-    fn modding_ui(&mut self, ui: &mut egui::Ui) {
-        let has_game = self.game_dir.is_some();
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Runtime modding").size(14.0).strong().color(TEXT));
-            if self.modding_on {
-                ui.label(egui::RichText::new("● enabled").size(12.0).color(ACCENT))
-                    .on_hover_text("vcb.pck is patched with the Godot Mod Loader");
-            } else {
-                ui.label(egui::RichText::new("● disabled").size(12.0).color(DIM));
-            }
+    /// The segmented Runtime / Legacy selector.
+    fn tab_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::none()
+            .fill(PANEL_2)
+            .rounding(egui::Rounding::same(9.0))
+            .inner_margin(egui::Margin::same(4.0))
+            .show(ui, |ui| {
+                let total = ui.available_width();
+                let spacing = 4.0;
+                let pill_w = ((total - spacing) / 2.0).max(80.0);
+                ui.spacing_mut().item_spacing.x = spacing;
+                ui.horizontal(|ui| {
+                    if tab_pill(ui, pill_w, self.tab == Tab::Runtime, "⚡  Runtime modding", "Mod Loader · recommended") {
+                        self.switch_tab(Tab::Runtime);
+                    }
+                    if tab_pill(ui, pill_w, self.tab == Tab::Legacy, "📦  Legacy", "Whole-.pck swap") {
+                        self.switch_tab(Tab::Legacy);
+                    }
+                });
+            });
+    }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.modding_on {
+    fn status_ui(&mut self, ui: &mut egui::Ui) {
+        let (dot, color) = if self.status_error { ("⚠", RED) } else { ("●", ACCENT) };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(dot).size(12.0).color(color));
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(&self.status).size(12.0).color(if self.status_error { RED } else { DIM }));
+        });
+    }
+
+    // ============================ Runtime modding tab ============================
+    fn runtime_tab(&mut self, ui: &mut egui::Ui) {
+        let has_game = self.game_dir.is_some();
+
+        section_header(ui, "Runtime modding", "Patch once, then load many mods from the game's mods/ folder");
+        ui.add_space(10.0);
+
+        // Status + controls card.
+        egui::Frame::none()
+            .fill(CARD)
+            .rounding(egui::Rounding::same(10.0))
+            .inner_margin(egui::Margin::same(16.0))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    if self.modding_on {
+                        ui.label(egui::RichText::new("●").color(ACCENT).size(15.0));
+                        ui.label(egui::RichText::new("Modding is enabled").size(15.0).strong().color(TEXT));
+                        ui.label(egui::RichText::new("vcb.pck is patched with the Godot Mod Loader").size(12.0).color(DIM));
+                    } else {
+                        ui.label(egui::RichText::new("●").color(FAINT).size(15.0));
+                        ui.label(egui::RichText::new("Modding is disabled").size(15.0).strong().color(TEXT));
+                        ui.label(egui::RichText::new("the game is running its stock vcb.pck").size(12.0).color(DIM));
+                    }
+                });
+
+                ui.add_space(14.0);
+
+                ui.horizontal(|ui| {
+                    // Primary action: launch the (patched) game.
+                    let launch_hint = if self.modding_on {
+                        "Start the game — the Mod Loader loads every .zip in the game's mods/ folder"
+                    } else {
+                        "Start the game (currently unmodded — enable modding first to load mods)"
+                    };
                     if ui
-                        .button("📁 Mods folder")
-                        .on_hover_text("Open the game's mods/ folder — drop Mod Loader mods (.zip) here")
+                        .add_enabled(has_game, primary_button("▶  Launch game"))
+                        .on_hover_text(launch_hint)
                         .clicked()
                     {
-                        if let Some(d) = self.game_dir.clone() {
-                            open_path(&patch::mods_dir(&d));
-                        }
+                        self.launch_current();
                     }
-                    if ui
-                        .button("Re-apply")
-                        .on_hover_text("Re-patch from the pristine original (e.g. after a Steam game update)")
+
+                    if self.modding_on {
+                        if ui
+                            .add(ghost_button("📁  Mods folder"))
+                            .on_hover_text("Open the game's mods/ folder — drop Mod Loader mods (.zip) here")
+                            .clicked()
+                        {
+                            if let Some(d) = self.game_dir.clone() {
+                                open_path(&patch::mods_dir(&d));
+                            }
+                        }
+                        if ui
+                            .add(ghost_button("Re-apply"))
+                            .on_hover_text("Re-patch from the pristine original (e.g. after a Steam game update)")
+                            .clicked()
+                        {
+                            self.enable_modding();
+                        }
+                        if ui
+                            .add(danger_button("Disable"))
+                            .on_hover_text("Restore the original vcb.pck")
+                            .clicked()
+                        {
+                            self.disable_modding();
+                        }
+                    } else if ui
+                        .add_enabled(has_game, primary_button("Enable modding"))
+                        .on_hover_text("Patch vcb.pck with the Godot Mod Loader so it can load mods at runtime (keeps a pristine backup)")
                         .clicked()
                     {
                         self.enable_modding();
                     }
-                    if ui
-                        .button(egui::RichText::new("Disable").color(RED))
-                        .on_hover_text("Restore the original vcb.pck")
-                        .clicked()
-                    {
-                        self.disable_modding();
-                    }
-                } else if ui
-                    .add_enabled(has_game, accent_widget("Enable modding"))
-                    .on_hover_text("Patch vcb.pck with the Godot Mod Loader so it can load mods at runtime (keeps a pristine backup)")
-                    .clicked()
+                });
+            });
+
+        ui.add_space(16.0);
+
+        // How-it-works helper.
+        egui::Frame::none()
+            .fill(PANEL_2)
+            .rounding(egui::Rounding::same(10.0))
+            .inner_margin(egui::Margin::same(16.0))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new("How it works").size(13.0).strong().color(TEXT));
+                ui.add_space(6.0);
+                for (n, line) in [
+                    "Enable modding — the launcher snapshots your pristine vcb.pck and bakes the Mod Loader into a fresh copy. Your original is never lost.",
+                    "Open the mods folder and drop in Mod Loader packages (.zip). Several mods can live side by side.",
+                    "Launch game — the Mod Loader loads every mod at startup, on the original game engine.",
+                ]
+                .iter()
+                .enumerate()
                 {
-                    self.enable_modding();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("{}.", n + 1)).size(12.0).strong().color(ACCENT));
+                        ui.label(egui::RichText::new(*line).size(12.0).color(DIM));
+                    });
+                    ui.add_space(3.0);
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("After a Steam update replaces vcb.pck, press Re-apply. Full guide: docs/MODDING.md.")
+                        .size(11.0)
+                        .color(FAINT),
+                );
+            });
+
+        if !has_game {
+            ui.add_space(14.0);
+            ui.label(
+                egui::RichText::new("Set your game folder at the top before enabling modding or launching.")
+                    .size(12.0)
+                    .color(YELLOW),
+            );
+        }
+    }
+
+    // ================================ Legacy tab ================================
+    fn legacy_tab(&mut self, ui: &mut egui::Ui) {
+        section_header(ui, "Legacy — whole-.pck swap", "Replace the entire vcb.pck with a modded one, one mod at a time");
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("⚠").size(12.0).color(YELLOW));
+            ui.label(
+                egui::RichText::new("Best-effort support. Prefer Runtime modding when a mod offers it.")
+                    .size(11.5)
+                    .color(YELLOW),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(ghost_button("What's this?")).clicked() {
+                    self.legacy_warning_open = true;
                 }
             });
         });
-        ui.label(
-            egui::RichText::new("Patches vcb.pck once with the Godot Mod Loader (the original is kept safe). Mods are Mod Loader packages (.zip) dropped into the game's mods/ folder — see docs/MODDING.md.")
-                .size(11.0)
-                .color(DIM),
-        );
-    }
+        ui.add_space(10.0);
 
-    fn status_ui(&mut self, ui: &mut egui::Ui) {
-        let color = if self.status_error { RED } else { DIM };
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&self.status).size(12.0).color(color));
+        // Two-column layout: mod list on the left, details on the right.
+        ui.horizontal_top(|ui| {
+            let list_w = 300.0_f32.min(ui.available_width() * 0.42);
+            ui.allocate_ui_with_layout(
+                egui::vec2(list_w, ui.available_height()),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(list_w);
+                    self.legacy_mods_list(ui);
+                },
+            );
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                self.legacy_details(ui);
+            });
         });
     }
 
-    fn mods_ui(&mut self, ui: &mut egui::Ui) {
+    fn legacy_mods_list(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Mods").size(16.0).strong().color(TEXT));
+            ui.label(egui::RichText::new("Mods").size(15.0).strong().color(TEXT));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⟳").on_hover_text("Rescan the mods folder").clicked() {
                     self.refresh_mods();
                     self.refresh_active();
                     self.set_ok("Rescanned mods.");
                 }
-                if ui.button("📁").on_hover_text("Open the mods folder").clicked() {
+                if ui.button("📁").on_hover_text("Open the launcher's mods folder").clicked() {
                     open_path(&scan::mods_dir());
                 }
             });
@@ -465,12 +651,14 @@ impl LauncherApp {
             });
     }
 
-    fn details_ui(&mut self, ui: &mut egui::Ui) {
+    fn legacy_details(&mut self, ui: &mut egui::Ui) {
         match self.selected {
             Sel::None => {
-                ui.add_space(40.0);
+                ui.add_space(30.0);
                 ui.vertical_centered(|ui| {
                     ui.label(egui::RichText::new("Select a mod on the left").size(16.0).color(DIM));
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("or pick “Vanilla game” to restore the original.").size(12.0).color(FAINT));
                 });
             }
             Sel::Vanilla => self.vanilla_details(ui),
@@ -479,7 +667,7 @@ impl LauncherApp {
     }
 
     fn vanilla_details(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Vanilla game").size(24.0).strong().color(TEXT));
+        ui.label(egui::RichText::new("Vanilla game").size(22.0).strong().color(TEXT));
         ui.add_space(4.0);
         ui.label(egui::RichText::new("The unmodified game.").color(DIM));
         ui.add_space(18.0);
@@ -487,7 +675,7 @@ impl LauncherApp {
         let has_backup = self.game_dir.as_ref().map(|d| install::has_backup(d)).unwrap_or(false);
         let active = matches!(self.active, install::Active::Vanilla);
         ui.horizontal(|ui| {
-            if accent_button(ui, "▶ Launch vanilla").clicked() {
+            if ui.add(primary_button("▶  Launch vanilla")).clicked() {
                 if !active {
                     self.restore();
                 }
@@ -497,7 +685,7 @@ impl LauncherApp {
             }
             if active {
                 ui.add_enabled(false, egui::Button::new("Active ✓"));
-            } else if ui.button("Restore vanilla").clicked() {
+            } else if ui.add(ghost_button("Restore vanilla")).clicked() {
                 self.restore();
             }
         });
@@ -532,7 +720,7 @@ impl LauncherApp {
         let is_active = self.is_active_mod(i);
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&name).size(24.0).strong().color(TEXT));
+            ui.label(egui::RichText::new(&name).size(22.0).strong().color(TEXT));
             if is_active {
                 ui.label(egui::RichText::new("  ACTIVE").size(12.0).strong().color(ACCENT));
             }
@@ -597,7 +785,7 @@ impl LauncherApp {
         ui.separator();
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if accent_button(ui, "▶ Launch modded").clicked() {
+            if ui.add(primary_button("▶  Launch modded")).clicked() {
                 self.activate(i);
                 if !self.status_error {
                     self.launch_current();
@@ -605,10 +793,10 @@ impl LauncherApp {
             }
             if is_active {
                 ui.add_enabled(false, egui::Button::new("Active ✓"));
-            } else if ui.button("Activate only").clicked() {
+            } else if ui.add(ghost_button("Activate only")).clicked() {
                 self.activate(i);
             }
-            if ui.button("Read metadata").on_hover_text("Re-parse mod.json from the mod package").clicked() {
+            if ui.add(ghost_button("Read metadata")).on_hover_text("Re-parse mod.json from the mod package").clicked() {
                 let m = meta::read_any(&path);
                 match m {
                     Some(_) => self.set_ok(format!("Read metadata from {}", path.display())),
@@ -624,11 +812,129 @@ impl LauncherApp {
                 .color(DIM),
         );
         ui.add_space(6.0);
-        ui.label(egui::RichText::new(path.display().to_string()).size(11.0).color(DIM));
+        ui.label(egui::RichText::new(path.display().to_string()).size(11.0).color(FAINT));
+    }
+
+    // ============================ Legacy warning modal ============================
+    fn legacy_warning_modal(&mut self, ctx: &egui::Context) {
+        // Dim the whole window behind the dialog.
+        let screen = ctx.screen_rect();
+        egui::Area::new("legacy_warn_dim".into())
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter().rect_filled(rect, egui::Rounding::ZERO, egui::Color32::from_black_alpha(150));
+                // Swallow clicks so the content behind stays inert.
+                let _ = resp;
+            });
+
+        egui::Area::new("legacy_warning".into())
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+              egui::Frame::none()
+                    .fill(PANEL)
+                    .rounding(egui::Rounding::same(12.0))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2a, 0x33, 0x3d)))
+                    .inner_margin(egui::Margin::same(22.0))
+                    .shadow(egui::epaint::Shadow {
+                        offset: egui::vec2(0.0, 6.0),
+                        blur: 24.0,
+                        spread: 0.0,
+                        color: egui::Color32::from_black_alpha(120),
+                    })
+              .show(ui, |ui| {
+                ui.set_max_width(460.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("⚠").size(20.0).color(YELLOW));
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("You're opening Legacy mode").size(17.0).strong().color(TEXT));
+                });
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Legacy mode is the launcher's original approach: it swaps the game's entire \
+                         vcb.pck for a modded one, one mod at a time, and keeps a backup of your \
+                         original so you can always go back.",
+                    )
+                    .size(13.0)
+                    .color(DIM),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(
+                        "It still works, but it's no longer the recommended path and gets less attention \
+                         going forward. Runtime modding (the other tab) is better supported — it patches \
+                         the game once with the Godot Mod Loader so you can run several mods as drop-in \
+                         .zip files without ever replacing the game's files.",
+                    )
+                    .size(13.0)
+                    .color(DIM),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Use Legacy mode mainly for whole-game mods that ship their own vcb.pck.")
+                        .size(12.0)
+                        .color(FAINT),
+                );
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.dont_show_legacy_again, "");
+                    ui.label(egui::RichText::new("Don't show this again").size(12.0).color(DIM));
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(primary_button("Continue to Legacy")).clicked() {
+                            self.dismiss_legacy_warning();
+                        }
+                        if ui.add(ghost_button("Back to Runtime")).clicked() {
+                            self.legacy_warning_open = false;
+                            self.tab = Tab::Runtime;
+                        }
+                    });
+                });
+              });
+            });
     }
 }
 
 // --- widgets --------------------------------------------------------------------------
+
+/// One tab in the segmented control. Fixed width so both tabs are equal.
+fn tab_pill(ui: &mut egui::Ui, width: f32, selected: bool, title: &str, subtitle: &str) -> bool {
+    let fill = if selected { CARD } else { egui::Color32::TRANSPARENT };
+    let resp = egui::Frame::none()
+        .fill(fill)
+        .rounding(egui::Rounding::same(7.0))
+        .inner_margin(egui::Margin::symmetric(12.0, 7.0))
+        .show(ui, |ui| {
+            ui.set_width(width - 24.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(13.5)
+                        .strong()
+                        .color(if selected { ACCENT } else { DIM }),
+                );
+                ui.label(
+                    egui::RichText::new(subtitle)
+                        .size(10.5)
+                        .color(if selected { DIM } else { FAINT }),
+                );
+            });
+        })
+        .response
+        .interact(egui::Sense::click());
+    if resp.hovered() {
+        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
 
 /// A clickable mod card. Returns true when clicked.
 fn card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, active: bool) -> bool {
@@ -638,7 +944,7 @@ fn card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, active: 
     } else {
         egui::Stroke::NONE
     };
-    let resp = egui::Frame::none()
+    let mut resp = egui::Frame::none()
         .fill(fill)
         .rounding(egui::Rounding::same(8.0))
         .stroke(stroke)
@@ -661,22 +967,47 @@ fn card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, active: 
         })
         .response
         .interact(egui::Sense::click());
-
-    if resp.hovered() {
-        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+    resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Subtle hover highlight for unselected cards.
+    if resp.hovered() && !selected {
+        ui.painter().rect_filled(
+            resp.rect,
+            egui::Rounding::same(8.0),
+            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 8),
+        );
     }
     resp.clicked()
 }
 
-fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(accent_widget(text))
-}
-
-/// The accent-filled button as a standalone widget (for `add_enabled`).
-fn accent_widget(text: &str) -> egui::Button<'static> {
+/// Accent-filled primary button.
+fn primary_button(text: &str) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(text).color(egui::Color32::BLACK).strong())
         .fill(ACCENT)
-        .rounding(egui::Rounding::same(6.0))
+        .stroke(egui::Stroke::new(1.0, ACCENT_DK))
+        .rounding(egui::Rounding::same(7.0))
+}
+
+/// Neutral outlined secondary button.
+fn ghost_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(TEXT))
+        .fill(CARD)
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2c, 0x35, 0x40)))
+        .rounding(egui::Rounding::same(7.0))
+}
+
+/// Outlined danger button.
+fn danger_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(RED))
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(egui::Stroke::new(1.0, RED))
+        .rounding(egui::Rounding::same(7.0))
+}
+
+/// A section title + one-line description.
+fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.label(egui::RichText::new(title).size(18.0).strong().color(TEXT));
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(subtitle).size(12.0).color(DIM));
 }
 
 /// The app's little logo — a circuit chip with pins and a lit central via — drawn as
@@ -719,19 +1050,23 @@ fn setup_style(ctx: &egui::Context) {
     visuals.override_text_color = Some(TEXT);
     visuals.panel_fill = BG;
     visuals.window_fill = PANEL;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0x0f, 0x12, 0x16);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(0x0c, 0x0f, 0x13);
     visuals.faint_bg_color = CARD;
     visuals.hyperlink_color = ACCENT;
     visuals.selection.bg_fill = ACCENT.linear_multiply(0.35);
     visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
-    visuals.widgets.inactive.rounding = egui::Rounding::same(6.0);
-    visuals.widgets.hovered.rounding = egui::Rounding::same(6.0);
-    visuals.widgets.active.rounding = egui::Rounding::same(6.0);
+    visuals.widgets.inactive.rounding = egui::Rounding::same(7.0);
+    visuals.widgets.hovered.rounding = egui::Rounding::same(7.0);
+    visuals.widgets.active.rounding = egui::Rounding::same(7.0);
+    visuals.widgets.inactive.bg_fill = CARD;
+    visuals.widgets.hovered.bg_fill = CARD_HOVER;
+    visuals.widgets.hovered.weak_bg_fill = CARD_HOVER;
+    visuals.widgets.inactive.weak_bg_fill = CARD;
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.button_padding = egui::vec2(13.0, 8.0);
     ctx.set_style(style);
 }
 
