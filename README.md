@@ -2,14 +2,17 @@
 
 A small, **portable GUI mod launcher** for [Virtual Circuit Board](https://store.steampowered.com/app/367020/).
 
-It supports two modding models:
+It supports two modding models, each on its own tab:
 
 - **Runtime modding (recommended).** Patch your `vcb.pck` **once** with the
   [Godot Mod Loader](https://godotengine.org/asset-library/asset/1938) so the game can load
   many mods at runtime from a `mods/` folder — the original game files are never replaced.
-  See **[docs/MODDING.md](docs/MODDING.md)** and **[docs/PATCHER_DESIGN.md](docs/PATCHER_DESIGN.md)**.
-- **Whole‑pck swap (legacy).** Swap a mod's `vcb.pck` into your install (one mod at a time),
-  keeping a one‑time backup of your original so you can always go back.
+  A **▶ Launch game** button starts the (patched) game with every mod loaded. See
+  **[docs/MODDING.md](docs/MODDING.md)** and **[docs/PATCHER_DESIGN.md](docs/PATCHER_DESIGN.md)**.
+- **Legacy — whole‑pck swap.** Swap a mod's `vcb.pck` into your install (one mod at a time),
+  keeping a one‑time backup of your original so you can always go back. Lives under the
+  **Legacy** tab; opening it once shows a short heads‑up that it's the older, best‑effort
+  path (dismissible with *Don't show again*).
 
 Single self-contained executable — no installer, no runtime, no Python. Windows + Linux.
 
@@ -17,14 +20,19 @@ Single self-contained executable — no installer, no runtime, no Python. Window
 
 ## Runtime modding (patch + Mod Loader)
 
-Click **Enable modding** and the launcher snapshots your pristine `vcb.pck` to
-`vcb.pck.original`, then writes a patched `vcb.pck` with the Godot Mod Loader baked in
-(original game files copied verbatim — no decryption key needed). Drop Mod Loader mods
-(`.zip`) into the game's `mods/` folder and launch. **Disable** restores the original;
-**Re‑apply** re‑patches after a Steam update. Full player + mod‑author guide:
+On the **Runtime modding** tab, click **Enable modding** and the launcher snapshots your
+pristine `vcb.pck` to `vcb.pck.original`, then writes a patched `vcb.pck` with the Godot
+Mod Loader baked in (original game files copied verbatim — no decryption key needed). Drop
+Mod Loader mods (`.zip`) into the game's `mods/` folder (**📁 Mods folder**) and press
+**▶ Launch game** — the Mod Loader loads every mod at startup. **Disable** restores the
+original; **Re‑apply** re‑patches after a Steam update. Full player + mod‑author guide:
 **[docs/MODDING.md](docs/MODDING.md)**.
 
-## Whole‑pck swap (legacy)
+## Legacy — whole‑pck swap
+
+Everything below lives under the **Legacy** tab. It's the launcher's original model; a
+one‑time notice explains that it's now best‑effort and points you at runtime modding for
+anything that supports it.
 
 - **Auto-detects** your Steam copy of the game (scans every Steam library folder for the
   one holding `vcb.pck` / the `vcb` executable). You can also point it at the folder
