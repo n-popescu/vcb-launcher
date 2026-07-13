@@ -1,7 +1,9 @@
 name: build
 
 # Build the launcher for Linux, Windows and macOS automatically on every commit
-# (any branch), on tags, and on demand. Tagged `v*` pushes also publish a release.
+# (any branch), on tags, and on demand. A GitHub Release is published automatically when a
+# version bump lands on `main` (the `release` job tags `v<version>` from Cargo.toml), and
+# also on a manual `v*` tag push.
 #
 # The launcher's procedural icon is baked into the executable so it shows before launch:
 #   - Windows: build.rs embeds a multi-resolution .ico as the .exe icon resource.
@@ -118,19 +120,59 @@ jobs:
           name: vcb-launcher-${{ matrix.name }}
           path: dist/*
 
+  # Publish a GitHub Release automatically. Two ways to trigger it, both producing a release
+  # with auto-generated notes (the commits/PRs since the previous tag) and the built binaries:
+  #   • push a `v*` tag manually, or
+  #   • push to `main` with a bumped `version` in Cargo.toml — the job tags `v<version>` and
+  #     releases it. If that tag already exists (no bump since the last release) it no-ops, so
+  #     ordinary commits to main don't spam releases. This is what the in-app self-updater
+  #     checks against, so every version bump that lands on main ships a release on its own.
   release:
     name: release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need tags to tell whether this version was already released
+
+      # Decide the tag and whether to publish.
+      - id: decide
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # Manual tag push: always publish it.
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            # Push to main: derive the tag from Cargo.toml and publish only if it's new.
+            version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+            tag="v${version}"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              echo "This version (${tag}) is already released — skipping."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - uses: actions/download-artifact@v4
+        if: steps.decide.outputs.publish == 'true'
         with:
           path: dist
           merge-multiple: true
+
       - uses: softprops/action-gh-release@v2
+        if: steps.decide.outputs.publish == 'true'
         with:
+          tag_name: ${{ steps.decide.outputs.tag }}
+          name: ${{ steps.decide.outputs.tag }}
           files: dist/*
+          fail_on_unmatched_files: true
           generate_release_notes: true
