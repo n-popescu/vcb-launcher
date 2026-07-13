@@ -22,6 +22,8 @@ const VERSION_LABEL := "Interface/GUI/VBoxContainer/Header/VBoxContainer/Upper/A
 const MODDED_SUFFIX := "-modded"
 
 var _built := false
+var _mods_window = null
+var _options_popup = null
 
 
 func _init() -> void:
@@ -70,6 +72,8 @@ func _build(main: Node, vbox: Node) -> void:
 	if host == null:
 		host = main
 	host.add_child(window)
+	_mods_window = window
+	_options_popup = _find_options_popup(main)
 
 	# The button, added to the Options button column with the stock hover styling.
 	if vbox.get_node_or_null("BtnMods") != null:
@@ -82,7 +86,24 @@ func _build(main: Node, vbox: Node) -> void:
 		if flux_scene != null:
 			btn.add_child(flux_scene.instance())
 	vbox.add_child(btn)
-	var _c = btn.connect("pressed", window, "open_window")
+	var _c = btn.connect("pressed", self, "_on_mods_button_pressed")
+
+
+# Close the Options popup before opening the Mods window, otherwise the Options menu is left
+# sitting open behind it. The window lives on the GUI layer (not inside the popup), so hiding
+# the popup doesn't take the window down with it.
+func _on_mods_button_pressed() -> void:
+	if _options_popup != null and is_instance_valid(_options_popup):
+		_options_popup.hide()
+	if _mods_window != null and is_instance_valid(_mods_window):
+		_mods_window.open_window()
+
+
+func _find_options_popup(main: Node) -> Node:
+	var opts := main.find_node("BtnOptions", true, false)
+	if opts == null:
+		return null
+	return opts.get_node_or_null("Popup")
 
 
 func _find_options_vbox(main: Node) -> Node:
