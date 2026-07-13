@@ -136,8 +136,10 @@ yet, nothing happens). When a newer version exists it shows a small prompt:
 
 CI builds **Linux**, **Windows**, and **macOS** (universal Intel + Apple Silicon) binaries
 automatically on every commit — grab them from the run's **Artifacts** on the Actions tab.
-Pushing a `v*` tag additionally publishes them to a GitHub **Release**. Or build from source
-below.
+Releases are **published automatically**: bump `version` in `Cargo.toml` and merge to `main`
+and CI tags `v<version>` and cuts a GitHub **Release** (built binaries + auto-generated notes);
+pushing a `v*` tag by hand does the same. Merging without a version bump re-releases nothing.
+This is what the in-app self-updater checks against. Or build from source below.
 
 ## Build from source
 
