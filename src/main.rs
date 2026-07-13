@@ -14,6 +14,7 @@ mod icon;
 mod icon_render;
 mod install;
 mod meta;
+mod modloader;
 mod net;
 mod patch;
 mod pck;
@@ -99,6 +100,9 @@ struct LauncherApp {
     update_info: Option<update::LauncherUpdate>, // the offered update, cached from the check
     dont_show_update_again: bool,          // the checkbox in the update prompt
     update_error: Option<String>,          // last apply failure, shown inside the prompt
+    // Godot Mod Loader update state (status shown by the runtime tab when modding is enabled).
+    modloader_check: Arc<Mutex<modloader::ModLoaderCheck>>, // latest version on GitHub
+    ml_update_phase: Arc<Mutex<modloader::UpdatePhase>>,    // "update Mod Loader" download
 }
 
 impl LauncherApp {
@@ -124,6 +128,11 @@ impl LauncherApp {
         // Check GitHub for a newer launcher in the background so the window opens instantly.
         update::spawn_launcher_check(launcher_check.clone(), cc.egui_ctx.clone());
 
+        // Also check the latest Godot Mod Loader version (surfaced on the runtime tab).
+        let modloader_check = Arc::new(Mutex::new(modloader::ModLoaderCheck::Checking));
+        let ml_update_phase = Arc::new(Mutex::new(modloader::UpdatePhase::Idle));
+        modloader::spawn_check(modloader_check.clone(), cc.egui_ctx.clone());
+
         let mut app = LauncherApp {
             game_dir,
             game_dir_input: String::new(),
@@ -146,6 +155,8 @@ impl LauncherApp {
             update_info: None,
             dont_show_update_again: false,
             update_error: None,
+            modloader_check,
+            ml_update_phase,
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
@@ -267,6 +278,35 @@ impl LauncherApp {
             }
             update::ApplyPhase::Idle | update::ApplyPhase::Working => {}
         }
+
+        // React to a completed Mod Loader download: re-apply the patch from the fresh cache.
+        let ml_phase = self.ml_update_phase.lock().unwrap().clone();
+        match ml_phase {
+            modloader::UpdatePhase::Downloaded(version) => {
+                *self.ml_update_phase.lock().unwrap() = modloader::UpdatePhase::Idle;
+                if let Some(dir) = self.game_dir.clone() {
+                    match self.apply_patch(&dir) {
+                        Ok(()) => {
+                            self.refresh_modding();
+                            self.refresh_active();
+                            self.set_ok(format!(
+                                "Mod Loader updated to v{version} and re-applied to vcb.pck."
+                            ));
+                        }
+                        Err(e) => self.set_err(format!(
+                            "Downloaded Mod Loader v{version}, but re-applying to vcb.pck failed: {e}"
+                        )),
+                    }
+                } else {
+                    self.set_ok(format!("Downloaded Mod Loader v{version} (set the game folder to apply it)."));
+                }
+            }
+            modloader::UpdatePhase::Failed(e) => {
+                *self.ml_update_phase.lock().unwrap() = modloader::UpdatePhase::Idle;
+                self.set_err(format!("Mod Loader update failed — {e}"));
+            }
+            modloader::UpdatePhase::Idle | modloader::UpdatePhase::Working => {}
+        }
         let _ = ctx;
     }
 
@@ -295,6 +335,73 @@ impl LauncherApp {
         }
     }
 
+    /// The Mod Loader up-to-date / out-of-date indicator shown beside the Disable button
+    /// while modding is enabled, with an inline "Update" action when a newer release exists.
+    fn modloader_status_inline(&mut self, ui: &mut egui::Ui) {
+        if matches!(*self.ml_update_phase.lock().unwrap(), modloader::UpdatePhase::Working) {
+            ui.spinner();
+            ui.label(egui::RichText::new("Updating Mod Loader…").size(12.0).color(DIM));
+            return;
+        }
+        let (latest, check_err) = match &*self.modloader_check.lock().unwrap() {
+            modloader::ModLoaderCheck::Known(l) => (Some(l.clone()), None),
+            modloader::ModLoaderCheck::Error(e) => (None, Some(e.clone())),
+            modloader::ModLoaderCheck::Checking => (None, None),
+        };
+        let applied = self
+            .game_dir
+            .as_ref()
+            .and_then(|d| patch::applied_version(&patch::pck_path(d)));
+
+        match (latest, applied) {
+            (Some(latest), Some(applied)) if update::is_newer(&latest.version, &applied) => {
+                ui.label(egui::RichText::new("⬆").size(13.0).color(YELLOW));
+                ui.label(
+                    egui::RichText::new(format!("Mod Loader out of date (v{applied} → v{})", latest.version))
+                        .size(12.0)
+                        .color(YELLOW),
+                );
+                if ui
+                    .add(primary_button("Update"))
+                    .on_hover_text("Download the latest Godot Mod Loader and re-apply it to vcb.pck")
+                    .clicked()
+                {
+                    let ctx = ui.ctx().clone();
+                    modloader::spawn_download(latest.zipball_url.clone(), self.ml_update_phase.clone(), ctx);
+                }
+            }
+            (Some(_), Some(applied)) => {
+                ui.label(egui::RichText::new("●").size(12.0).color(ACCENT));
+                ui.label(egui::RichText::new(format!("Mod Loader up to date (v{applied})")).size(12.0).color(DIM));
+            }
+            (None, Some(applied)) => {
+                // Couldn't reach GitHub (offline / rate-limited) or still checking — just show
+                // what's installed, with the check error (if any) on hover.
+                let resp = ui.label(egui::RichText::new(format!("Mod Loader v{applied}")).size(12.0).color(FAINT));
+                if let Some(err) = check_err {
+                    resp.on_hover_text(format!("Couldn't check for Mod Loader updates: {err}"));
+                }
+            }
+            _ => {
+                ui.label(egui::RichText::new("Mod Loader").size(12.0).color(FAINT));
+            }
+        }
+    }
+
+    /// Patch `vcb.pck` from the best available Mod Loader: the web-downloaded copy in the
+    /// `modloader/` cache if present, otherwise the built-in seed. So enable / Re-apply /
+    /// "Update Mod Loader" all bake in the newest version the launcher has.
+    fn apply_patch(&self, dir: &Path) -> Result<(), patch::PatchError> {
+        match modloader::cached_addon_owned() {
+            Some(owned) => {
+                let refs: Vec<(&str, &[u8])> =
+                    owned.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+                patch::enable_modding_with(dir, &refs)
+            }
+            None => patch::enable_modding(dir),
+        }
+    }
+
     /// Patch the game's `vcb.pck` with the Godot Mod Loader (keeping the pristine
     /// original as `vcb.pck.original`). Refuses if the current pck looks like a mod and
     /// there's no clean backup, so we never bake a mod in as the "original".
@@ -309,7 +416,7 @@ impl LauncherApp {
             self.set_err("Your current vcb.pck looks like a mod. Revert to vanilla (or Steam → Verify integrity of game files) first, then enable modding.");
             return;
         }
-        match patch::enable_modding(&dir) {
+        match self.apply_patch(&dir) {
             Ok(()) => {
                 self.refresh_modding();
                 self.refresh_active();
@@ -620,6 +727,8 @@ impl LauncherApp {
                         {
                             self.disable_modding();
                         }
+                        ui.add_space(10.0);
+                        self.modloader_status_inline(ui);
                     } else if ui
                         .add_enabled(has_game, primary_button("Enable modding"))
                         .on_hover_text("Patch vcb.pck with the Godot Mod Loader so it can load mods at runtime (keeps a pristine backup)")
