@@ -11,9 +11,15 @@ extends Popup
 # stock dialog StyleBoxFlat + the game Theme — so it reads as a native window.
 
 const FluxModPopupScene := preload("res://src/gui/flux/flux_mod_popup.tscn")
+const FluxModButtonScene := preload("res://src/gui/flux/flux_mod_button.tscn")
+
+# Secondary / tertiary text greys, matching the game's stock muted readouts.
+const MUTED := Color(0.58, 0.63, 0.71)
+const DIM := Color(0.42, 0.47, 0.55)
 
 var _list: VBoxContainer = null
 var _empty_label: Label = null
+var _count_label: Label = null
 
 func _ready() -> void:
 	_build_ui()
@@ -33,21 +39,30 @@ func _build_ui() -> void:
 	panel.add_stylebox_override("panel", _make_panel_style())
 	add_child(panel)
 
+	# Vanilla dialog spacing (cf. dialog_shortcuts.tscn): 40px sides, 20px top/bottom.
 	var margin := MarginContainer.new()
-	margin.add_constant_override("margin_left", 30)
-	margin.add_constant_override("margin_right", 30)
+	margin.add_constant_override("margin_left", 40)
+	margin.add_constant_override("margin_right", 40)
 	margin.add_constant_override("margin_top", 20)
 	margin.add_constant_override("margin_bottom", 20)
 	panel.add_child(margin)
 
 	var root := VBoxContainer.new()
-	root.add_constant_override("separation", 8)
+	root.add_constant_override("separation", 16)
 	margin.add_child(root)
 
+	# Header: centered title + a muted "N mods loaded" line, like the stock dialogs.
 	var title := Label.new()
 	title.text = "Installed mods"
 	title.align = Label.ALIGN_CENTER
+	title.add_color_override("font_color", Color(1, 1, 1, 1))
 	root.add_child(title)
+
+	_count_label = Label.new()
+	_count_label.align = Label.ALIGN_CENTER
+	_count_label.add_color_override("font_color", MUTED)
+	root.add_child(_count_label)
+
 	root.add_child(HSeparator.new())
 
 	# Scrollable list so any number of mods fits.
@@ -58,7 +73,7 @@ func _build_ui() -> void:
 	root.add_child(scroll)
 
 	_list = VBoxContainer.new()
-	_list.add_constant_override("separation", 12)
+	_list.add_constant_override("separation", 16)
 	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(_list)
 
@@ -66,15 +81,21 @@ func _build_ui() -> void:
 	_empty_label.text = "No mods are installed."
 	_empty_label.align = Label.ALIGN_CENTER
 	_empty_label.autowrap = true
+	_empty_label.add_color_override("font_color", MUTED)
 	root.add_child(_empty_label)
 
 	root.add_child(HSeparator.new())
+
+	# Close button: centered, min width, with the game's stock hover (flux), like dialog_warning.
 	var close_btn := Button.new()
 	close_btn.text = "Close"
+	close_btn.rect_min_size = Vector2(72, 0)
+	close_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_add_stock_hover(close_btn)
 	var _c = close_btn.connect("pressed", self, "hide")
 	root.add_child(close_btn)
 
-	rect_min_size = Vector2(500, 0)
+	rect_min_size = Vector2(520, 0)
 
 	# Stock backdrop + centered scale/fade entrance, exactly like the built-in dialogs.
 	var flux := FluxModPopupScene.instance()
@@ -105,8 +126,14 @@ func _refresh() -> void:
 	var mods := _get_mods()
 	if _empty_label:
 		_empty_label.visible = mods.empty()
-	for entry in mods:
-		_list.add_child(_make_mod_entry(entry))
+	if _count_label:
+		var n := mods.size()
+		_count_label.text = "%d mod loaded" % n if n == 1 else "%d mods loaded" % n
+	# A thin separator between entries (but not a trailing one) reads cleaner than boxing each.
+	for i in range(mods.size()):
+		if i > 0:
+			_list.add_child(HSeparator.new())
+		_list.add_child(_make_mod_entry(mods[i]))
 
 # Read the loader's registry. Uses the ModLoaderStore autoload (what ModLoaderMod.get_mod_data_all
 # returns), guarded so a missing/renamed field can never crash the window.
@@ -173,7 +200,7 @@ func _make_mod_entry(e: Dictionary) -> Control:
 	if ver != "":
 		var ver_lbl := Label.new()
 		ver_lbl.text = "v" + ver
-		ver_lbl.add_color_override("font_color", Color(0.58, 0.63, 0.71))
+		ver_lbl.add_color_override("font_color", MUTED)
 		header.add_child(ver_lbl)
 	box.add_child(header)
 
@@ -181,7 +208,7 @@ func _make_mod_entry(e: Dictionary) -> Control:
 	if authors != "":
 		var by := Label.new()
 		by.text = "by " + authors
-		by.add_color_override("font_color", Color(0.58, 0.63, 0.71))
+		by.add_color_override("font_color", MUTED)
 		box.add_child(by)
 
 	var desc := str(e.get("description", ""))
@@ -206,8 +233,16 @@ func _make_mod_entry(e: Dictionary) -> Control:
 		var tech_lbl := Label.new()
 		tech_lbl.text = PoolStringArray(tech).join("   \u00b7   ")
 		tech_lbl.autowrap = true
-		tech_lbl.add_color_override("font_color", Color(0.42, 0.47, 0.55))
+		tech_lbl.add_color_override("font_color", DIM)
 		box.add_child(tech_lbl)
 
-	box.add_child(HSeparator.new())
 	return box
+
+
+# Attach the game's stock animated hover fill (FluxModButton) to a plain Button.
+func _add_stock_hover(btn: Button) -> void:
+	if FluxModButtonScene == null:
+		return
+	var flux = FluxModButtonScene.instance()
+	if flux != null:
+		btn.add_child(flux)

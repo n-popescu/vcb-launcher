@@ -16,6 +16,10 @@ const FLUX_MOD_BUTTON := "res://src/gui/flux/flux_mod_button.tscn"
 const MAIN_THEME := "res://src/gui/themes/main_theme.tres"
 # The Options popup's button column (Fullscreen / Settings / Shortcuts / Changelog live here).
 const OPTIONS_VBOX := "Interface/GUI/VBoxContainer/Header/VBoxContainer/Upper/HelpSettingsAndWindow/BtnOptions/Popup/Panel/MarginContainer/VBoxContainer"
+# The header version readout ("Virtual Circuit Board · 1.0.1"). We suffix it with "-modded"
+# so a successful Mod Loader load is visible at a glance.
+const VERSION_LABEL := "Interface/GUI/VBoxContainer/Header/VBoxContainer/Upper/AlertBar/HBoxContainer/VersionLabel"
+const MODDED_SUFFIX := "-modded"
 
 var _built := false
 
@@ -48,6 +52,11 @@ func _process(_delta: float) -> void:
 
 
 func _build(main: Node, vbox: Node) -> void:
+	# Tag the header version readout so a loaded mod is visible without opening any menu
+	# (e.g. "Virtual Circuit Board · 1.0.1-modded"). The Mod Menu ships with every modded
+	# install, so its presence is a reliable "modding is active" signal.
+	_tag_version_modded(main)
+
 	# The window lives on the GUI layer (NOT inside the Options popup, which hides on focus
 	# loss and would take the window down with it).
 	var window := _new(SCRIPTS + "/mods_window.gd")
@@ -81,6 +90,20 @@ func _find_options_vbox(main: Node) -> Node:
 	if opts == null:
 		return null
 	return opts.get_node_or_null("Popup/Panel/MarginContainer/VBoxContainer")
+
+
+# Append "-modded" to the version label so a successful mod load is visible in-game. The
+# label's own _ready has already set its text by the time the Main scene exists, so we just
+# suffix it. Guarded to be idempotent and to never crash if the node moves/renames.
+func _tag_version_modded(main: Node) -> void:
+	var label = main.get_node_or_null(VERSION_LABEL)
+	if label == null:
+		label = main.find_node("VersionLabel", true, false)
+	if not (label is Label):
+		return
+	var current := str(label.text)
+	if current.find(MODDED_SUFFIX) == -1:
+		label.text = current + MODDED_SUFFIX
 
 
 # Instance a mod script, or null (logged) if it can't be loaded — never dereference a null.
