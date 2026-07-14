@@ -23,9 +23,11 @@ Single self-contained executable — no installer, no runtime, no Python. Window
 On the **Runtime modding** tab, click **Enable modding** and the launcher snapshots your
 pristine `vcb.pck` to `vcb.pck.original`, then writes a patched `vcb.pck` with the Godot
 Mod Loader baked in (original game files copied verbatim — no decryption key needed). It
-also installs a small built-in **mod list** mod, so **Options ▸ Mods** in‑game shows every
-installed mod. Drop Mod Loader mods (`.zip`) into the game's `mods/` folder (**📁 Mods
-folder**) and press **▶ Launch game** — the Mod Loader loads every mod at startup.
+also installs a small **mod list** mod (fetched from the
+[`vcb-modmenu`](https://github.com/n-popescu/vcb-modmenu) repo's latest release), so
+**Options ▸ Mods** in‑game shows every installed mod. Drop Mod Loader mods (`.zip`) into the
+game's `mods/` folder (**📁 Mods folder**) and press **▶ Launch game** — the Mod Loader loads
+every mod at startup.
 **Disable** restores the original; **Re‑apply** re‑patches after a Steam update. Full
 player + mod‑author guide: **[docs/MODDING.md](docs/MODDING.md)**.
 
@@ -173,9 +175,12 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
   launcher, GitHub latest‑release lookup + zipball download/extract, and version parsing
   (`const MODLOADER_VERSION`). The launcher patches from the cached copy when present, else
   the seed embedded by `build.rs`.
-- `src/bundled.rs` — writes the bundled **Mod Menu** (`Options ▸ Mods`) into the game's
-  `mods/` folder on enable. Its files are vendored under `vendor/mod-menu/` and embedded by
-  `build.rs`.
+- `src/modmenu.rs` — the web‑updatable **Mod Menu** (`Options ▸ Mods`): a `modmenu/` cache
+  next to the launcher, GitHub latest‑release lookup + `npopescu-ModMenu.zip` download, and
+  install into the game's `mods/` folder on enable/Re‑apply. It's fetched from its own repo
+  ([`vcb-modmenu`](https://github.com/n-popescu/vcb-modmenu)) at runtime — no longer vendored —
+  so it always picks up the latest upstream release. Best‑effort: an offline first run with no
+  cached copy simply skips it.
 - `src/archive.rs` — zipped-mod support: reads metadata from a `.zip` and extracts its
   bundled `.pck` on activation.
 - `src/meta.rs` — the `mod.json` schema + embedded/sidecar/zip lookup.

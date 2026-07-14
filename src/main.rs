@@ -8,13 +8,13 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod archive;
-mod bundled;
 mod config;
 mod icon;
 mod icon_render;
 mod install;
 mod meta;
 mod modloader;
+mod modmenu;
 mod net;
 mod patch;
 mod pck;
@@ -173,6 +173,16 @@ impl LauncherApp {
         app.refresh_mods();
         app.refresh_active();
         app.refresh_modding();
+
+        // Keep the in-game Mod Menu current: pull the latest release from the vcb-modmenu repo
+        // into the cache, and — if modding is already enabled — drop that fresh copy into the
+        // game's mods/ folder now (best-effort, off the UI thread).
+        let mm_mods_dir = if app.modding_on {
+            app.game_dir.as_deref().map(patch::mods_dir)
+        } else {
+            None
+        };
+        modmenu::spawn_refresh(mm_mods_dir);
         app
     }
 
