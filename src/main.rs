@@ -660,7 +660,15 @@ impl eframe::App for LauncherApp {
             .frame(egui::Frame::none().fill(BG_CONTENT).inner_margin(egui::Margin::same(18.0)))
             .show(ctx, |ui| {
                 match self.tab {
-                    Tab::Runtime => self.runtime_tab(ui),
+                    // The Runtime tab stacks several cards that can outgrow a short window, so it
+                    // scrolls (mouse wheel + touchpad). The Legacy tab manages its own height with
+                    // an inner scroll list, so it isn't wrapped here (an outer scroll area would
+                    // make its available height unbounded and break the two-column layout).
+                    Tab::Runtime => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.runtime_tab(ui));
+                    }
                     Tab::Legacy => self.legacy_tab(ui),
                 }
             });
@@ -1092,7 +1100,12 @@ impl LauncherApp {
             ui.add_space(4.0);
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
-                self.legacy_details(ui);
+                // The details pane can be taller than the window (long descriptions / metadata),
+                // so it scrolls too (mouse wheel + touchpad).
+                egui::ScrollArea::vertical()
+                    .id_source("legacy_details_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.legacy_details(ui));
             });
         });
     }
