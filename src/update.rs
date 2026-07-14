@@ -30,7 +30,7 @@ const GH_ACCEPT: &str = "application/vnd.github+json";
 /// Parse a `vMAJOR.MINOR.PATCH` (or bare `MAJOR.MINOR.PATCH`) tag into comparable numbers.
 /// A missing minor/patch is treated as 0; extra dotted parts are ignored. Returns None if
 /// the first three components aren't numeric.
-fn parse_ver(s: &str) -> Option<(u64, u64, u64)> {
+pub fn parse_ver(s: &str) -> Option<(u64, u64, u64)> {
     let s = s.trim();
     let s = s.strip_prefix('v').or_else(|| s.strip_prefix('V')).unwrap_or(s);
     // Drop any pre-release/build suffix (e.g. "1.2.3-rc1").
