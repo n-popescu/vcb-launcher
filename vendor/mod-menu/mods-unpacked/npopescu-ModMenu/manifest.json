@@ -1,9 +1,9 @@
 {
 	"name": "ModMenu",
 	"namespace": "npopescu",
-	"version_number": "1.1.0",
+	"version_number": "1.2.0",
 	"website_url": "",
-	"description": "Adds a Mods button to the Options menu that opens a window listing every installed mod with its name, version, authors and description - read live from the Godot Mod Loader.",
+	"description": "Adds a Mods button to the Options menu that opens a window listing every installed mod. A clickable left column shows each mod's name, version and author; selecting one expands its details on the right - description, repository URL (with an Open repository button) and an 'update available' check against the mod's GitHub releases. Read live from the Godot Mod Loader.",
 	"dependencies": [],
 	"extra": {
 		"godot": {
