@@ -211,9 +211,11 @@ pub fn enable_modding_with(game_dir: &Path, addon: Addon) -> Result<(), PatchErr
     fs::rename(&tmp, &live)?;
 
     let _ = fs::create_dir_all(mods_dir(game_dir));
-    // Ship the in-game mod list (Options ▸ Mods) out of the box. Best-effort: if it can't be
-    // written, modding still works — the player just won't have the built-in list.
-    let _ = crate::bundled::install_mod_menu(&mods_dir(game_dir));
+    // Install the in-game Mod Menu (Options ▸ Mods) from the latest copy cached from the
+    // vcb-modmenu repo (fetched at startup). Best-effort: on a fresh offline install with no
+    // cached copy this is skipped — modding still works, the player just won't have the list yet
+    // (it lands on the next enable/Re-apply once online).
+    let _ = crate::modmenu::install(&mods_dir(game_dir));
     Ok(())
 }
 
@@ -325,10 +327,9 @@ mod tests {
         // Pristine original was snapshotted, untouched.
         assert_eq!(fs::read(backup_path(&dir)).unwrap(), original_pck_bytes);
         assert!(mods_dir(&dir).is_dir(), "mods/ folder created");
-        assert!(
-            mods_dir(&dir).join(crate::bundled::MOD_MENU_ZIP).is_file(),
-            "the bundled Mod Menu zip is installed on enable"
-        );
+        // The Mod Menu is fetched from the vcb-modmenu repo and installed from cache (see
+        // modmenu.rs); with no cache in a unit test it's simply skipped, so we don't assert it
+        // here. modmenu::tests covers the install-from-zip path.
 
         let patched = read_dir(&pck_path(&dir)).unwrap().unwrap();
 
