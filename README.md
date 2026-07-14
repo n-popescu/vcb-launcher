@@ -38,6 +38,19 @@ isn't stuck on that version — when a newer release exists an **Update** button
 downloads it into a `modloader/` folder next to the launcher and re‑applies the patch, so
 `vcb.pck` is always baked with the newest Mod Loader without waiting for a launcher update.
 
+### Updates & installed mods
+
+Under the controls, an **Updates** card shows the launcher version and a **Check for updates**
+button. It checks GitHub for a newer launcher *and* for newer versions of every mod in your
+game folder in one click. When a launcher update is available it downloads the new build, swaps
+it in, and offers **Restart now** (the update also applies the next time you open the launcher).
+
+The **Mods in your game folder** list shows every Mod Loader mod (`.zip`) next to the game —
+including the in‑game Mod Menu — with its version and a link to its GitHub repo. Each mod is
+checked against its repo's latest release (from the manifest's `website_url`); when a newer
+version exists, an **Update** button downloads it and replaces the mod in place. Mods whose
+manifest has no GitHub `website_url` are listed but can't be auto‑updated.
+
 ## Legacy — whole‑pck swap
 
 Everything below lives under the **Legacy** tab. It's the launcher's original model; a
@@ -124,15 +137,20 @@ The [`vcb-mp`](https://github.com/n-popescu/vcb-mp) mod ships this file
 
 On startup the launcher quietly checks its own GitHub **Releases** for a newer version (in a
 background thread — the window opens instantly, and if you're offline or there's no release
-yet, nothing happens). When a newer version exists it shows a small prompt:
+yet, nothing happens). You can also check any time with **Check for updates** in the Updates
+card. When a newer version exists it shows a small prompt:
 
 - **Update now** downloads the build for your platform. On **Windows/Linux** (single binary)
-  it swaps the running executable in place and relaunches; on **macOS** it saves the `.app`
+  it swaps the running executable in place, then offers **Restart now** — the update also
+  applies automatically the next time you open the launcher. On **macOS** it saves the `.app`
   zip next to the app and reveals it in Finder for you to unzip and replace.
 - **Cancel** dismisses it for this run. Since the check happens at every startup, you'll be
   reminded again next time you open the launcher.
 - **Don't show again until the next version** stops the prompt for this version only — it
   returns automatically once an even newer release is out. (Stored in `launcher_config.json`.)
+
+The same **Check for updates** button also re‑checks every mod installed in your game folder;
+see [Updates & installed mods](#updates--installed-mods) above.
 
 ## Download
 
@@ -181,6 +199,10 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
   ([`vcb-modmenu`](https://github.com/n-popescu/vcb-modmenu)) at runtime — no longer vendored —
   so it always picks up the latest upstream release. Best‑effort: an offline first run with no
   cached copy simply skips it.
+- `src/gamemods.rs` — the **installed‑mods** list: scans the game's `mods/` folder for Mod
+  Loader `.zip` packages, reads each manifest (name / `version_number` / `website_url`),
+  derives its GitHub repo, checks that repo's latest release, and downloads + swaps the zip in
+  place to update it (with unit tests for the manifest/repo parsing, asset selection, and scan).
 - `src/archive.rs` — zipped-mod support: reads metadata from a `.zip` and extracts its
   bundled `.pck` on activation.
 - `src/meta.rs` — the `mod.json` schema + embedded/sidecar/zip lookup.
