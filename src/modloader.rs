@@ -10,10 +10,10 @@
 //! Version discovery is uniform: the Mod Loader records its own version in
 //! `addons/mod_loader/mod_loader_store.gd` as `const MODLOADER_VERSION = "x.y.z"`, so we read
 //! the applied version straight out of the patched pck, the cached copy, and the seed the
-//! same way, and compare against the latest GitHub release.
+//! same way, and compare against the latest **Godot 3.x** GitHub release (see `check_latest`:
+//! the game is Godot 3.5.1, so the Mod Loader's Godot 4.x line — 7.x+ — is deliberately ignored).
 
 use crate::net;
-use crate::update::{self, Asset, Release};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -97,7 +97,14 @@ fn collect_addon_files(dir: &Path, cache_root: &Path, out: &mut Vec<(String, Vec
     }
 }
 
-// ---- GitHub: latest release + download -----------------------------------------------
+// ---- GitHub: latest Godot-3.x release + download -------------------------------------
+
+/// The Godot Mod Loader publishes two lines: **6.x for Godot 3.x** and **7.x+ for Godot 4.x**
+/// (its 7.x release notes literally say "This is the Godot 4.x Version!"). VCB runs on Godot
+/// 3.5.1, so a 7.x build is the wrong engine — yet GitHub's `releases/latest` points at it. So
+/// we never take the bare "latest"; we list the releases and pick the newest one whose major
+/// version is still in the Godot 3.x line.
+const GODOT3_MAX_MAJOR: u64 = 6;
 
 #[derive(Clone, Debug)]
 pub struct Latest {
@@ -105,28 +112,72 @@ pub struct Latest {
     pub zipball_url: String,
 }
 
-fn parse_zipball(json: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("zipball_url")?.as_str().map(|s| s.to_string())
-}
-
-/// Query the Mod Loader's latest GitHub release (tag → version, plus the source zipball URL).
+/// Query the Mod Loader's releases and return the newest **Godot 3.x** one (tag → version, plus
+/// a download URL: a packaged `.zip` asset if the release attaches one, else the source zipball).
 pub fn check_latest() -> Result<Latest, String> {
-    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/tag/v6.3.0");
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases?per_page=100");
     let json = net::get_text(&url, GH_ACCEPT)?;
-    let release: Release = update::parse_release(&json)
-        .ok_or_else(|| "couldn't parse the Mod Loader release response".to_string())?;
-    // Prefer a packaged asset zip if one is published; else the source zipball (always present).
-    let zipball_url = pick_zip_asset(&release)
-        .map(|a| a.url.clone())
-        .or_else(|| parse_zipball(&json))
-        .ok_or_else(|| "release had no downloadable archive".to_string())?;
-    Ok(Latest { version: release.tag.trim_start_matches(['v', 'V']).to_string(), zipball_url })
+    pick_latest_godot3(&json)
+        .ok_or_else(|| "couldn't find a Godot 3.x Mod Loader release".to_string())
 }
 
-/// A published `.zip` asset, if the release attaches one (some Mod Loader releases do).
-fn pick_zip_asset(release: &Release) -> Option<&Asset> {
-    release.assets.iter().find(|a| a.name.to_ascii_lowercase().ends_with(".zip"))
+/// Choose the newest non-draft, non-prerelease release with a Godot-3.x-line version (major
+/// `<= GODOT3_MAX_MAJOR`) out of a GitHub `/releases` JSON array.
+fn pick_latest_godot3(list_json: &str) -> Option<Latest> {
+    let arr = serde_json::from_str::<serde_json::Value>(list_json).ok()?;
+    let mut best: Option<((u64, u64, u64), Latest)> = None;
+    for rel in arr.as_array()? {
+        if rel.get("draft").and_then(|v| v.as_bool()).unwrap_or(false)
+            || rel.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(tag) = rel.get("tag_name").and_then(|v| v.as_str()) else { continue };
+        let Some(ver) = parse_semver(tag) else { continue };
+        if ver.0 > GODOT3_MAX_MAJOR {
+            continue; // 7.x+ is the Godot 4.x line
+        }
+        if let Some((best_ver, _)) = best.as_ref() {
+            if ver <= *best_ver {
+                continue;
+            }
+        }
+        // Prefer a packaged `.zip` asset if published; else the source zipball (always present).
+        let Some(zipball_url) = pick_zip_asset_url(rel)
+            .or_else(|| rel.get("zipball_url").and_then(|v| v.as_str()).map(String::from))
+        else {
+            continue;
+        };
+        let version = tag.trim_start_matches(['v', 'V']).to_string();
+        best = Some((ver, Latest { version, zipball_url }));
+    }
+    best.map(|(_, latest)| latest)
+}
+
+/// The `browser_download_url` of the first `.zip` asset attached to a release JSON object.
+fn pick_zip_asset_url(rel: &serde_json::Value) -> Option<String> {
+    for a in rel.get("assets")?.as_array()? {
+        let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.to_ascii_lowercase().ends_with(".zip") {
+            if let Some(url) = a.get("browser_download_url").and_then(|v| v.as_str()) {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Parse a `vMAJOR.MINOR.PATCH` (or bare) tag into comparable numbers; a missing minor/patch is
+/// treated as 0 and a pre-release/build suffix is dropped. None if the major isn't numeric.
+fn parse_semver(tag: &str) -> Option<(u64, u64, u64)> {
+    let s = tag.trim();
+    let s = s.strip_prefix('v').or_else(|| s.strip_prefix('V')).unwrap_or(s);
+    let core = s.split(['-', '+']).next().unwrap_or(s);
+    let mut it = core.split('.');
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next().unwrap_or("0").parse().ok()?;
+    let patch = it.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
 }
 
 /// Download `zipball_url`, extract its `addons/**`, and replace the cache with it. Returns the
@@ -289,11 +340,51 @@ mod tests {
     }
 
     #[test]
-    fn zipball_url_parsed_from_release_json() {
-        let json = r#"{"tag_name":"v6.4.0","zipball_url":"https://api.github.com/repos/GodotModding/godot-mod-loader/zipball/v6.4.0","assets":[]}"#;
-        assert_eq!(
-            parse_zipball(json).as_deref(),
-            Some("https://api.github.com/repos/GodotModding/godot-mod-loader/zipball/v6.4.0")
-        );
+    fn parses_semver_tags() {
+        assert_eq!(parse_semver("v6.3.0"), Some((6, 3, 0)));
+        assert_eq!(parse_semver("7.0.1"), Some((7, 0, 1)));
+        assert_eq!(parse_semver("v6"), Some((6, 0, 0)));
+        assert_eq!(parse_semver("v6.4.0-rc1"), Some((6, 4, 0)));
+        assert_eq!(parse_semver("nightly"), None);
+    }
+
+    #[test]
+    fn picks_latest_godot3_release_ignoring_godot4_and_drafts() {
+        // Newest-first, like the GitHub API: the "latest" release is a Godot 4.x (7.x) build and
+        // must be skipped, a draft 6.x is skipped, and the newest real 6.x wins.
+        let json = r#"[
+            {"tag_name":"v7.0.1","draft":false,"prerelease":false,"zipball_url":"https://z/7.0.1","assets":[]},
+            {"tag_name":"v6.4.0","draft":true,"prerelease":false,"zipball_url":"https://z/6.4.0d","assets":[]},
+            {"tag_name":"v6.3.0","draft":false,"prerelease":false,"zipball_url":"https://z/6.3.0","assets":[]},
+            {"tag_name":"v6.2.0","draft":false,"prerelease":false,"zipball_url":"https://z/6.2.0","assets":[]}
+        ]"#;
+        let latest = pick_latest_godot3(json).expect("a Godot 3.x release");
+        assert_eq!(latest.version, "6.3.0");
+        assert_eq!(latest.zipball_url, "https://z/6.3.0");
+    }
+
+    #[test]
+    fn newer_godot3_version_is_picked_regardless_of_list_order() {
+        let json = r#"[
+            {"tag_name":"v6.3.0","draft":false,"prerelease":false,"zipball_url":"https://z/6.3.0","assets":[]},
+            {"tag_name":"v6.10.0","draft":false,"prerelease":false,"zipball_url":"https://z/6.10.0","assets":[]}
+        ]"#;
+        assert_eq!(pick_latest_godot3(json).unwrap().version, "6.10.0");
+    }
+
+    #[test]
+    fn prefers_a_packaged_zip_asset_over_the_source_zipball() {
+        let json = r#"[
+            {"tag_name":"v6.3.0","draft":false,"prerelease":false,"zipball_url":"https://z/src",
+             "assets":[{"name":"notes.txt","browser_download_url":"https://a/notes"},
+                       {"name":"ModLoader.zip","browser_download_url":"https://a/ml.zip"}]}
+        ]"#;
+        assert_eq!(pick_latest_godot3(json).unwrap().zipball_url, "https://a/ml.zip");
+    }
+
+    #[test]
+    fn a_list_of_only_godot4_releases_yields_none() {
+        let json = r#"[{"tag_name":"v7.0.1","draft":false,"prerelease":false,"zipball_url":"https://z/7","assets":[]}]"#;
+        assert!(pick_latest_godot3(json).is_none());
     }
 }
