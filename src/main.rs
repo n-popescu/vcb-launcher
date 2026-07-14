@@ -15,6 +15,7 @@ mod install;
 mod meta;
 mod modloader;
 mod modmenu;
+mod mods;
 mod net;
 mod patch;
 mod pck;
@@ -103,6 +104,12 @@ struct LauncherApp {
     // Godot Mod Loader update state (status shown by the runtime tab when modding is enabled).
     modloader_check: Arc<Mutex<modloader::ModLoaderCheck>>, // latest version on GitHub
     ml_update_phase: Arc<Mutex<modloader::UpdatePhase>>,    // "update Mod Loader" download
+    // Installed game mods (the zips in the game's mods/ folder) + their per-mod update states.
+    game_mods: Vec<mods::GameMod>,
+    mod_states: mods::States,
+    mods_checked: bool, // have we run a mod-update check this session yet
+    // A finished self-update waiting for the user to restart (binary already swapped on disk).
+    pending_restart: Option<PathBuf>,
 }
 
 impl LauncherApp {
@@ -157,6 +164,10 @@ impl LauncherApp {
             update_error: None,
             modloader_check,
             ml_update_phase,
+            game_mods: Vec::new(),
+            mod_states: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            mods_checked: false,
+            pending_restart: None,
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
@@ -173,6 +184,7 @@ impl LauncherApp {
         app.refresh_mods();
         app.refresh_active();
         app.refresh_modding();
+        app.refresh_game_mods();
 
         // Keep the in-game Mod Menu current: pull the latest release from the vcb-modmenu repo
         // into the cache, and — if modding is already enabled — drop that fresh copy into the
@@ -218,6 +230,31 @@ impl LauncherApp {
             .as_ref()
             .map(|d| patch::modding_enabled(d))
             .unwrap_or(false);
+    }
+
+    /// Re-scan the game's `mods/` folder into `game_mods`, dropping stale per-mod update states.
+    fn refresh_game_mods(&mut self) {
+        self.game_mods = match &self.game_dir {
+            Some(d) => mods::scan(&patch::mods_dir(d)),
+            None => Vec::new(),
+        };
+        let ids: std::collections::HashSet<&str> =
+            self.game_mods.iter().map(|m| m.id.as_str()).collect();
+        self.mod_states.lock().unwrap().retain(|k, _| ids.contains(k.as_str()));
+    }
+
+    /// Check for updates to both the launcher itself and every installed mod (background workers).
+    fn check_all_updates(&mut self, ctx: &egui::Context) {
+        // Launcher self-update: re-run the check and let the modal re-open when it lands.
+        self.update_acked = false;
+        self.update_open = false;
+        self.update_error = None;
+        update::spawn_launcher_check(self.launcher_check.clone(), ctx.clone());
+        // Installed mods.
+        self.refresh_game_mods();
+        self.mods_checked = true;
+        mods::spawn_check_all(&self.game_mods, self.mod_states.clone(), ctx.clone());
+        self.set_ok("Checking for launcher and mod updates…");
     }
 
     /// Switch tabs, popping the legacy warning the first time the Legacy tab is opened
@@ -270,10 +307,15 @@ impl LauncherApp {
         let phase = self.apply_phase.lock().unwrap().clone();
         match phase {
             update::ApplyPhase::Relaunch(exe) => {
-                // The binary was swapped in place — start the new one and quit so it takes over.
+                // The binary was swapped in place. Don't quit from under the user — surface a
+                // "Restart now" button and let them finish when ready (the new binary is already
+                // on disk, so a later manual restart picks it up too).
                 *self.apply_phase.lock().unwrap() = update::ApplyPhase::Idle;
-                let _ = std::process::Command::new(&exe).spawn();
-                std::process::exit(0);
+                self.pending_restart = Some(exe);
+                // Dismiss the update modal so the "Restart now" banner is visible behind it.
+                self.update_open = false;
+                self.update_acked = true;
+                self.update_error = None;
             }
             update::ApplyPhase::Message(m) => {
                 *self.apply_phase.lock().unwrap() = update::ApplyPhase::Idle;
@@ -299,6 +341,7 @@ impl LauncherApp {
                         Ok(()) => {
                             self.refresh_modding();
                             self.refresh_active();
+                            self.refresh_game_mods();
                             self.set_ok(format!(
                                 "Mod Loader updated to v{version} and re-applied to vcb.pck."
                             ));
@@ -430,6 +473,7 @@ impl LauncherApp {
             Ok(()) => {
                 self.refresh_modding();
                 self.refresh_active();
+                self.refresh_game_mods();
                 self.set_ok("Modding enabled — vcb.pck patched with the Godot Mod Loader. The in-game mod list (Options ▸ Mods) is installed automatically. Drop more Mod Loader mods (.zip) into the game's mods/ folder, then Launch game.");
             }
             Err(e) => self.set_err(format!("Couldn't enable modding: {}", e)),
@@ -445,6 +489,7 @@ impl LauncherApp {
             Ok(()) => {
                 self.refresh_modding();
                 self.refresh_active();
+                self.refresh_game_mods();
                 self.set_ok("Modding disabled — restored the original vcb.pck.");
             }
             Err(e) => self.set_err(format!("Couldn't disable modding: {}", e)),
@@ -459,6 +504,7 @@ impl LauncherApp {
                 config::save_game_dir(&d);
                 self.refresh_active();
                 self.refresh_modding();
+                self.refresh_game_mods();
                 self.set_ok(format!("Found the game at {}", d.display()));
             }
             None => self.set_err("No Steam install found in the usual locations."),
@@ -479,6 +525,7 @@ impl LauncherApp {
         config::save_game_dir(&p);
         self.refresh_active();
         self.refresh_modding();
+        self.refresh_game_mods();
         self.set_ok(format!("Using game folder {} (remembered for next time)", p.display()));
     }
 
@@ -672,6 +719,13 @@ impl LauncherApp {
 
     // ============================ Runtime modding tab ============================
     fn runtime_tab(&mut self, ui: &mut egui::Ui) {
+        // The installed-mods list can make this tab taller than the window, so let it scroll.
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            self.runtime_tab_body(ui);
+        });
+    }
+
+    fn runtime_tab_body(&mut self, ui: &mut egui::Ui) {
         let has_game = self.game_dir.is_some();
 
         section_header(ui, "Runtime modding", "Patch once, then load many mods from the game's mods/ folder");
@@ -749,6 +803,17 @@ impl LauncherApp {
                 });
             });
 
+        // A finished launcher self-update waiting for a restart.
+        if self.pending_restart.is_some() {
+            ui.add_space(12.0);
+            self.restart_banner(ui);
+        }
+
+        ui.add_space(16.0);
+
+        // Installed-mods list (the zips in the game's mods/ folder): versions, repo links, updates.
+        self.mods_panel(ui);
+
         ui.add_space(16.0);
 
         // How-it-works helper.
@@ -789,6 +854,148 @@ impl LauncherApp {
                     .size(12.0)
                     .color(YELLOW),
             );
+        }
+    }
+
+    // ============================ Restart-after-update banner ============================
+    /// Shown once a launcher self-update has been downloaded and swapped in on disk: prompt the
+    /// user to restart so the new binary takes over.
+    fn restart_banner(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::none()
+            .fill(CARD_SEL)
+            .rounding(egui::Rounding::same(10.0))
+            .stroke(egui::Stroke::new(1.0, ACCENT_DK))
+            .inner_margin(egui::Margin::same(14.0))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("✔").size(15.0).color(ACCENT));
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Launcher update downloaded").size(14.0).strong().color(TEXT));
+                        ui.label(
+                            egui::RichText::new("Restart the launcher to finish applying it.")
+                                .size(12.0)
+                                .color(DIM),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(primary_button("Restart now")).clicked() {
+                            self.restart_now();
+                        }
+                        if ui.add(ghost_button("Later")).on_hover_text("The update is already installed; it applies next time you open the launcher").clicked() {
+                            self.pending_restart = None;
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Relaunch the (already-swapped) executable and quit so it takes over.
+    fn restart_now(&mut self) {
+        if let Some(exe) = self.pending_restart.take() {
+            let _ = std::process::Command::new(&exe).spawn();
+            std::process::exit(0);
+        }
+    }
+
+    // ============================ Installed-mods panel ============================
+    /// The list of mods in the game's mods/ folder, with versions, repo links, and per-mod
+    /// "Update" from each mod's own GitHub releases.
+    fn mods_panel(&mut self, ui: &mut egui::Ui) {
+        // Snapshot state so the render closures don't hold the lock or borrow self.
+        let states = self.mod_states.lock().unwrap().clone();
+        let has_game = self.game_dir.is_some();
+        let checking_any = states.values().any(|s| matches!(s, mods::UpdateState::Checking));
+
+        // Actions gathered during rendering, applied after (to avoid borrowing self in closures).
+        let mut want_check = false;
+        let mut want_refresh = false;
+        let mut want_open_folder = false;
+        let mut want_update: Option<(String, String)> = None; // (mod id, asset url)
+
+        egui::Frame::none()
+            .fill(CARD)
+            .rounding(egui::Rounding::same(10.0))
+            .inner_margin(egui::Margin::same(16.0))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Installed mods").size(15.0).strong().color(TEXT));
+                    ui.label(
+                        egui::RichText::new("in the game's mods/ folder")
+                            .size(12.0)
+                            .color(DIM),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(has_game && !checking_any, ghost_button("Check for updates"))
+                            .on_hover_text("Check the launcher and every installed mod against their GitHub releases")
+                            .clicked()
+                        {
+                            want_check = true;
+                        }
+                        if ui.add(ghost_button("⟳")).on_hover_text("Rescan the mods folder").clicked() {
+                            want_refresh = true;
+                        }
+                        if ui.add(ghost_button("📁")).on_hover_text("Open the game's mods/ folder").clicked() {
+                            want_open_folder = true;
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+
+                if !has_game {
+                    ui.label(
+                        egui::RichText::new("Set your game folder above to see installed mods.")
+                            .size(12.0)
+                            .color(DIM),
+                    );
+                    return;
+                }
+                if self.game_mods.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No mods found. Enable modding, then drop mod .zip files into the mods/ folder (the in-game Mod Menu is installed for you).")
+                            .size(12.0)
+                            .color(DIM),
+                    );
+                    return;
+                }
+
+                for m in &self.game_mods {
+                    let state = states.get(&m.id).cloned().unwrap_or(mods::UpdateState::Unchecked);
+                    mod_row(ui, m, &state, &mut want_update);
+                }
+                if !self.mods_checked {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Press “Check for updates” to compare each mod against its GitHub release.")
+                            .size(11.0)
+                            .color(FAINT),
+                    );
+                }
+            });
+
+        // Apply gathered actions.
+        if want_open_folder {
+            if let Some(d) = self.game_dir.clone() {
+                open_path(&patch::mods_dir(&d));
+            }
+        }
+        if want_refresh {
+            self.refresh_game_mods();
+            self.set_ok("Rescanned the game's mods folder.");
+        }
+        if want_check {
+            let ctx = ui.ctx().clone();
+            self.check_all_updates(&ctx);
+        }
+        if let Some((id, asset_url)) = want_update {
+            if let Some(m) = self.game_mods.iter().find(|m| m.id == id) {
+                let dest = m.file.clone();
+                let ctx = ui.ctx().clone();
+                mods::spawn_update(id, asset_url, dest, self.mod_states.clone(), ctx);
+                self.set_ok("Downloading mod update…");
+            }
         }
     }
 
@@ -1194,7 +1401,7 @@ impl LauncherApp {
                         egui::RichText::new(if cfg!(target_os = "macos") {
                             "Update now downloads the new build and reveals it in Finder — unzip it and replace the app to finish."
                         } else {
-                            "Update now downloads the new build, swaps it in, and relaunches the launcher."
+                            "Update now downloads the new build and swaps it in; then a Restart button finishes applying it."
                         })
                         .size(12.0)
                         .color(FAINT),
@@ -1321,6 +1528,90 @@ fn card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, active: 
         );
     }
     resp.clicked()
+}
+
+/// One row in the installed-mods panel: name + version + repo link on the left, and an update
+/// status/action on the right driven by the mod's `UpdateState`. A clicked "Update" records
+/// `(id, asset_url)` into `want_update` for the caller to act on.
+fn mod_row(
+    ui: &mut egui::Ui,
+    m: &mods::GameMod,
+    state: &mods::UpdateState,
+    want_update: &mut Option<(String, String)>,
+) {
+    egui::Frame::none()
+        .fill(PANEL_2)
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .outer_margin(egui::Margin { top: 0.0, bottom: 6.0, left: 0.0, right: 0.0 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        let name = ui.label(egui::RichText::new(&m.name).size(14.0).strong().color(TEXT));
+                        if !m.description.is_empty() {
+                            name.on_hover_text(&m.description);
+                        }
+                        if !m.version.is_empty() {
+                            ui.label(egui::RichText::new(format!("v{}", m.version)).size(12.0).color(DIM));
+                        }
+                    });
+                    if let Some((owner, repo)) = m.repo() {
+                        ui.hyperlink_to(
+                            egui::RichText::new(format!("{owner}/{repo}")).size(11.0).color(ACCENT),
+                            &m.website_url,
+                        );
+                    } else if !m.website_url.is_empty() {
+                        ui.label(egui::RichText::new(&m.website_url).size(11.0).color(FAINT));
+                    } else {
+                        ui.label(egui::RichText::new("no repository link").size(11.0).color(FAINT));
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match state {
+                        mods::UpdateState::Checking => {
+                            ui.spinner();
+                            ui.label(egui::RichText::new("checking…").size(12.0).color(DIM));
+                        }
+                        mods::UpdateState::UpToDate => {
+                            ui.label(egui::RichText::new("● up to date").size(12.0).color(ACCENT));
+                        }
+                        mods::UpdateState::Available { latest, asset_url } => {
+                            if ui
+                                .add(primary_button("Update"))
+                                .on_hover_text(format!("Download v{latest} from the mod's GitHub release and replace it here"))
+                                .clicked()
+                            {
+                                *want_update = Some((m.id.clone(), asset_url.clone()));
+                            }
+                            ui.label(egui::RichText::new(format!("⬆ v{latest}")).size(12.0).color(YELLOW));
+                        }
+                        mods::UpdateState::Updating => {
+                            ui.spinner();
+                            ui.label(egui::RichText::new("updating…").size(12.0).color(DIM));
+                        }
+                        mods::UpdateState::Updated(v) => {
+                            ui.label(
+                                egui::RichText::new(format!("✔ updated to v{v} — relaunch the game"))
+                                    .size(12.0)
+                                    .color(ACCENT),
+                            );
+                        }
+                        mods::UpdateState::NoRepo => {
+                            ui.label(egui::RichText::new("no update source").size(12.0).color(FAINT));
+                        }
+                        mods::UpdateState::Error(e) => {
+                            ui.label(egui::RichText::new("check failed").size(12.0).color(FAINT))
+                                .on_hover_text(e);
+                        }
+                        mods::UpdateState::Unchecked => {
+                            ui.label(egui::RichText::new("—").size(12.0).color(FAINT));
+                        }
+                    }
+                });
+            });
+        });
 }
 
 /// Accent-filled primary button.

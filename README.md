@@ -31,7 +31,17 @@ every mod at startup.
 **Disable** restores the original; **Re‑apply** re‑patches after a Steam update. Full
 player + mod‑author guide: **[docs/MODDING.md](docs/MODDING.md)**.
 
-Beside those controls the launcher shows a **Mod Loader** status: *up to date* or *out of
+### Installed mods + updates
+
+Under the launch controls the Runtime tab shows an **Installed mods** panel that lists every
+mod in the game's `mods/` folder with its version and (when its manifest has a GitHub
+`website_url`) a link to its repo. Press **Check for updates** to compare each mod — and the
+launcher itself — against its latest GitHub release; any mod that's behind gets an **Update**
+button that downloads the new `.zip` from the release and replaces it in place (relaunch the
+game to pick it up). The launcher's own update downloads and swaps itself in, then shows a
+**Restart now** button to finish applying it (no forced relaunch).
+
+Beside the runtime controls the launcher also shows a **Mod Loader** status: *up to date* or *out of
 date*, checked against the [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader)
 releases on startup. The launcher ships with a built‑in Mod Loader as an offline seed, but it
 isn't stuck on that version — when a newer release exists an **Update** button appears that
