@@ -16,18 +16,17 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const GH_ACCEPT: &str = "application/vnd.github+json";
-
 /// An installed Mod Loader mod (`.zip`) in the game's `mods/` folder.
 #[derive(Clone, Debug)]
 pub struct GameMod {
-    pub file: PathBuf,                   // the .zip on disk
+    pub file: PathBuf,                   // the package on disk (`<name>.zip`, or `<name>.zip.disabled`)
     pub id: String,                      // mods-unpacked/<id> folder name (namespace-name)
     pub name: String,                    // display name from the manifest
     pub version: String,                 // version_number from the manifest
     pub website: String,                 // website_url from the manifest
     pub description: String,             // description from the manifest
     pub repo: Option<(String, String)>,  // (owner, repo) parsed from the website, if it's GitHub
+    pub enabled: bool,                   // false when the package is parked as `<name>.zip.disabled`
 }
 
 impl GameMod {
@@ -40,8 +39,27 @@ impl GameMod {
     }
 }
 
-/// Scan `mods_dir` for Mod Loader mod zips and read each one's manifest. Non-mod zips (no
-/// `mods-unpacked/<id>/manifest.json`) are skipped. Sorted by display name.
+/// Suffix appended to an enabled `<name>.zip` to park it as disabled. The Mod Loader only loads
+/// files whose extension is exactly `zip` (see `load_zips_in_folder`), so a `.disabled` tail keeps
+/// the package in the folder (and in this list) while stopping it from loading at launch.
+pub const DISABLED_SUFFIX: &str = ".disabled";
+
+/// Classify a mods-folder entry: `Some(true)` = an enabled `<name>.zip`, `Some(false)` = a disabled
+/// `<name>.zip.disabled`, `None` = not a mod package we manage.
+fn enabled_state(name: &str) -> Option<bool> {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".zip") {
+        Some(true)
+    } else if lower.ends_with(".zip.disabled") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Scan `mods_dir` for Mod Loader mod packages and read each one's manifest. Both enabled
+/// (`<name>.zip`) and disabled (`<name>.zip.disabled`) packages are listed, so the player can toggle
+/// them; non-mod zips (no `mods-unpacked/<id>/manifest.json`) are skipped. Sorted by display name.
 pub fn scan(mods_dir: &Path) -> Vec<GameMod> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(mods_dir) else {
@@ -49,10 +67,13 @@ pub fn scan(mods_dir: &Path) -> Vec<GameMod> {
     };
     for e in entries.flatten() {
         let p = e.path();
-        if !p.extension().map(|x| x.eq_ignore_ascii_case("zip")).unwrap_or(false) {
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
             continue;
-        }
-        if let Some(gm) = read_mod(&p) {
+        };
+        let Some(enabled) = enabled_state(name) else {
+            continue;
+        };
+        if let Some(gm) = read_mod(&p, enabled) {
             out.push(gm);
         }
     }
@@ -60,7 +81,7 @@ pub fn scan(mods_dir: &Path) -> Vec<GameMod> {
     out
 }
 
-fn read_mod(zip_path: &Path) -> Option<GameMod> {
+fn read_mod(zip_path: &Path, enabled: bool) -> Option<GameMod> {
     let bytes = std::fs::read(zip_path).ok()?;
     let (id, manifest_json) = manifest_from_zip(&bytes)?;
     let m = parse_manifest(&manifest_json)?;
@@ -73,7 +94,38 @@ fn read_mod(zip_path: &Path) -> Option<GameMod> {
         website: m.website.clone(),
         description: m.description,
         repo: repo_from_url(&m.website),
+        enabled,
     })
+}
+
+/// Enable or disable an installed mod by renaming its package (`<name>.zip` ⇄
+/// `<name>.zip.disabled`) — the Mod Loader loads only real `.zip` files, so a disabled package
+/// stays in the folder but isn't loaded next launch. Returns the package's new path. A no-op (and
+/// success) if it's already in the requested state; errors if the target name already exists.
+pub fn set_mod_enabled(file: &Path, enable: bool) -> Result<PathBuf, String> {
+    let name = file
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "invalid mod file path".to_string())?;
+    let currently_enabled = match enabled_state(name) {
+        Some(e) => e,
+        None => return Err("not a mod package".to_string()),
+    };
+    if currently_enabled == enable {
+        return Ok(file.to_path_buf()); // already in the requested state
+    }
+    let new_name = if enable {
+        name[..name.len() - DISABLED_SUFFIX.len()].to_string() // strip trailing ".disabled"
+    } else {
+        format!("{name}{DISABLED_SUFFIX}")
+    };
+    let new_path = file.with_file_name(&new_name);
+    if new_path.exists() {
+        return Err(format!("a file named \"{new_name}\" already exists"));
+    }
+    std::fs::rename(file, &new_path)
+        .map_err(|e| format!("couldn't {} the mod: {e}", if enable { "enable" } else { "disable" }))?;
+    Ok(new_path)
 }
 
 struct Manifest {
@@ -153,29 +205,17 @@ pub struct ModLatest {
     pub asset_url: String,
 }
 
-/// Query a mod repo's latest release for its version and the downloadable mod zip. Unlike the Mod
-/// Loader (which ships two engine lines — see `modloader.rs`), ordinary mods have a single release
-/// line, so `releases/latest` is correct here.
+/// Query a mod repo for its latest release version and the download URL of its package, WITHOUT
+/// the rate-limited REST API: the version comes from the repo's releases Atom feed and the download
+/// URL is the github.com `releases/latest/download/<id>.zip` CDN redirect (see `github.rs`). The
+/// asset is `<id>.zip` by the VCB mods' CI convention; `download_and_install` verifies the
+/// downloaded zip's manifest id, so a differently-named/renamed asset is refused, not mis-installed.
 pub fn check_latest(owner: &str, repo: &str, mod_id: &str) -> Result<ModLatest, String> {
-    let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
-    let json = net::get_text(&url, GH_ACCEPT)?;
-    let release = update::parse_release(&json)
-        .ok_or_else(|| "couldn't parse the release response".to_string())?;
-    let asset = pick_asset(&release.assets, mod_id)
-        .ok_or_else(|| "the release has no downloadable mod zip".to_string())?;
+    let tag = crate::github::latest_release_tag(owner, repo)?;
     Ok(ModLatest {
-        version: release.tag.trim_start_matches(['v', 'V']).to_string(),
-        asset_url: asset.url.clone(),
+        version: tag.trim_start_matches(['v', 'V']).to_string(),
+        asset_url: crate::github::latest_asset_download_url(owner, repo, &format!("{mod_id}.zip")),
     })
-}
-
-/// The mod's release asset: prefer `<id>.zip`, else any `.zip`.
-fn pick_asset<'a>(assets: &'a [update::Asset], mod_id: &str) -> Option<&'a update::Asset> {
-    let named = format!("{mod_id}.zip").to_ascii_lowercase();
-    assets
-        .iter()
-        .find(|a| a.name.to_ascii_lowercase() == named)
-        .or_else(|| assets.iter().find(|a| a.name.to_ascii_lowercase().ends_with(".zip")))
 }
 
 /// Download `asset_url` and, if it's a package for `mod_id`, install it over `dest` (the existing
@@ -339,20 +379,6 @@ mod tests {
     }
 
     #[test]
-    fn picks_the_named_asset_then_any_zip() {
-        let assets = vec![
-            update::Asset { name: "notes.txt".into(), url: "u0".into() },
-            update::Asset { name: "other.zip".into(), url: "u1".into() },
-            update::Asset { name: "npopescu-ModMenu.zip".into(), url: "u2".into() },
-        ];
-        assert_eq!(pick_asset(&assets, "npopescu-ModMenu").unwrap().url, "u2");
-        let only_other = vec![update::Asset { name: "some-pkg.zip".into(), url: "z".into() }];
-        assert_eq!(pick_asset(&only_other, "npopescu-ModMenu").unwrap().url, "z");
-        let none = vec![update::Asset { name: "a.txt".into(), url: "x".into() }];
-        assert!(pick_asset(&none, "id").is_none());
-    }
-
-    #[test]
     fn scan_reads_mods_and_skips_junk() {
         let base = std::env::temp_dir().join(format!("vcbl_gamemods_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -373,6 +399,75 @@ mod tests {
         assert_eq!(mods[0].id, "npopescu-ModMenu");
         assert_eq!(mods[0].version, "1.4.0");
         assert_eq!(mods[0].repo, Some(("n-popescu".into(), "vcb-modmenu".into())));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn classifies_enabled_and_disabled_packages() {
+        assert_eq!(enabled_state("author-Mod.zip"), Some(true));
+        assert_eq!(enabled_state("author-Mod.ZIP"), Some(true));
+        assert_eq!(enabled_state("author-Mod.zip.disabled"), Some(false));
+        assert_eq!(enabled_state("author-Mod.zip.DISABLED"), Some(false));
+        assert_eq!(enabled_state("notes.txt"), None);
+        assert_eq!(enabled_state("something.disabled"), None); // not a .zip underneath
+    }
+
+    #[test]
+    fn scan_lists_disabled_mods_too() {
+        let base = std::env::temp_dir().join(format!("vcbl_gmdisabled_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let manifest = |name: &str, ns: &str| {
+            format!(
+                r#"{{"name":"{name}","namespace":"{ns}","version_number":"1.0.0"}}"#
+            )
+        };
+        std::fs::write(
+            base.join("author-On.zip"),
+            make_zip(&[("mods-unpacked/author-On/manifest.json", &manifest("On", "author"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("author-Off.zip.disabled"),
+            make_zip(&[("mods-unpacked/author-Off/manifest.json", &manifest("Off", "author"))]),
+        )
+        .unwrap();
+
+        let mods = scan(&base);
+        assert_eq!(mods.len(), 2, "both enabled and disabled packages are listed");
+        let on = mods.iter().find(|m| m.id == "author-On").unwrap();
+        let off = mods.iter().find(|m| m.id == "author-Off").unwrap();
+        assert!(on.enabled);
+        assert!(!off.enabled);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn set_mod_enabled_round_trips_by_renaming() {
+        let base = std::env::temp_dir().join(format!("vcbl_gmtoggle_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zip = make_zip(&[(
+            "mods-unpacked/author-Mod/manifest.json",
+            r#"{"name":"Mod","namespace":"author","version_number":"1.0.0"}"#,
+        )]);
+        let enabled_path = base.join("author-Mod.zip");
+        std::fs::write(&enabled_path, &zip).unwrap();
+
+        // Disable → parked as .zip.disabled, not scanned as enabled.
+        let disabled_path = set_mod_enabled(&enabled_path, false).unwrap();
+        assert_eq!(disabled_path, base.join("author-Mod.zip.disabled"));
+        assert!(!enabled_path.exists() && disabled_path.exists());
+        assert!(!scan(&base)[0].enabled);
+
+        // Disabling again is a no-op success.
+        assert_eq!(set_mod_enabled(&disabled_path, false).unwrap(), disabled_path);
+
+        // Enable → back to the plain .zip.
+        let back = set_mod_enabled(&disabled_path, true).unwrap();
+        assert_eq!(back, enabled_path);
+        assert!(enabled_path.exists() && !disabled_path.exists());
+        assert!(scan(&base)[0].enabled);
         let _ = std::fs::remove_dir_all(&base);
     }
 

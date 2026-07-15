@@ -9,6 +9,7 @@
 
 mod config;
 mod gamemods;
+mod github;
 mod icon;
 mod icon_render;
 mod launch;
@@ -345,6 +346,28 @@ impl LauncherApp {
             (Some(d), true) => gamemods::scan(&patch::mods_dir(d)),
             _ => Vec::new(),
         };
+    }
+
+    /// Toggle whether a mod loads at launch, by renaming its package (`<name>.zip` ⇄
+    /// `<name>.zip.disabled`). The disabled package stays installed (and in the list) but the Mod
+    /// Loader skips it. Rescans so the list reflects the new state; the mod's id is unchanged, so
+    /// the selection and any pending update-check result carry over.
+    fn set_mod_enabled(&mut self, gm: gamemods::GameMod, enable: bool) {
+        match gamemods::set_mod_enabled(&gm.file, enable) {
+            Ok(_) => {
+                self.refresh_game_mods();
+                if enable {
+                    self.set_ok(format!("Enabled {} — it will load next launch.", gm.display_name()));
+                } else {
+                    self.set_ok(format!("Disabled {} — it stays installed but won't load.", gm.display_name()));
+                }
+            }
+            Err(e) => self.set_err(format!(
+                "Couldn't {} {}: {e}",
+                if enable { "enable" } else { "disable" },
+                gm.display_name()
+            )),
+        }
     }
 
     /// Kick off a background GitHub check for every installed game mod.
@@ -1031,6 +1054,7 @@ impl LauncherApp {
         let mut do_update_all = false;
         let mut new_selection: Option<String> = None;
         let mut do_update: Option<(gamemods::GameMod, gamemods::ModLatest)> = None;
+        let mut do_set_enabled: Option<(gamemods::GameMod, bool)> = None;
 
         // Details-pane transition: when the shown mod changes, fade + rise the new details in.
         let now = ui.ctx().input(|i| i.time);
@@ -1105,8 +1129,12 @@ impl LauncherApp {
                             ui.add_space((1.0 - appear) * 10.0);
                             if let Some(gm) = mods.iter().find(|m| Some(m.id.as_str()) == selected.as_deref()) {
                                 let is_working = working.as_deref() == Some(gm.id.as_str());
-                                if let Some(latest) = mod_detail_ui(ui, gm, checks.get(&gm.id), is_working) {
+                                let action = mod_detail_ui(ui, gm, checks.get(&gm.id), is_working);
+                                if let Some(latest) = action.update {
                                     do_update = Some((gm.clone(), latest));
+                                }
+                                if let Some(enable) = action.set_enabled {
+                                    do_set_enabled = Some((gm.clone(), enable));
                                 }
                             } else {
                                 ui.add_space(20.0);
@@ -1125,6 +1153,9 @@ impl LauncherApp {
         }
         if let Some((gm, latest)) = do_update {
             self.queue_update(gm, latest);
+        }
+        if let Some((gm, enable)) = do_set_enabled {
+            self.set_mod_enabled(gm, enable);
         }
         if do_rescan {
             self.refresh_game_mods();
@@ -1299,10 +1330,15 @@ fn mod_list_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(gm.display_name()).size(13.5).strong().color(pal().text));
+                let name_color = if gm.enabled { pal().text } else { pal().dim };
+                ui.label(egui::RichText::new(gm.display_name()).size(13.5).strong().color(name_color));
                 ui.horizontal(|ui| {
                     let ver = if gm.version.is_empty() { "—".to_string() } else { format!("v{}", gm.version) };
                     ui.label(egui::RichText::new(ver).size(11.0).color(pal().dim));
+                    if !gm.enabled {
+                        ui.label(egui::RichText::new("· off").size(11.0).strong().color(pal().faint))
+                            .on_hover_text("Disabled — installed but not loaded");
+                    }
                     if is_working {
                         ui.label(egui::RichText::new("· updating…").size(11.0).color(pal().dim));
                     } else {
@@ -1355,18 +1391,44 @@ fn mod_list_row(
     resp.clicked()
 }
 
-/// The details pane (right) for the selected mod: name, version + a single-mod Update button when
-/// an update is available, repo link, and the full description. Returns the available `ModLatest`
-/// when its Update button is clicked this frame.
+/// What the details pane wants `mods_master_detail` to do this frame (so the free function doesn't
+/// borrow `self`): download an update, and/or flip the mod's enabled state.
+#[derive(Default)]
+struct DetailAction {
+    update: Option<gamemods::ModLatest>,
+    set_enabled: Option<bool>,
+}
+
+/// The details pane (right) for the selected mod: an enable/disable switch, name, version + a
+/// single-mod Update button when an update is available, repo link, and the full description.
 fn mod_detail_ui(
     ui: &mut egui::Ui,
     gm: &gamemods::GameMod,
     check: Option<&gamemods::ModCheck>,
     is_working: bool,
-) -> Option<gamemods::ModLatest> {
+) -> DetailAction {
+    let mut action = DetailAction::default();
     let mut clicked_latest: Option<gamemods::ModLatest> = None;
 
-    ui.label(egui::RichText::new(gm.display_name()).size(20.0).strong().color(pal().text));
+    // Title + the on/off switch on the right — one switch per mod, right where it's selected.
+    ui.horizontal(|ui| {
+        let title_color = if gm.enabled { pal().text } else { pal().dim };
+        ui.label(egui::RichText::new(gm.display_name()).size(20.0).strong().color(title_color));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut on = gm.enabled;
+            let hint = if gm.enabled {
+                "Enabled — the mod loads when you launch the game. Toggle off to keep it installed but skip loading it."
+            } else {
+                "Disabled — the mod stays installed but won't load. Toggle on to load it next launch."
+            };
+            if toggle_switch(ui, &mut on).on_hover_text(hint).changed() {
+                action.set_enabled = Some(on);
+            }
+            ui.add_space(6.0);
+            let (word, color) = if gm.enabled { ("Enabled", pal().accent) } else { ("Disabled", pal().dim) };
+            ui.label(egui::RichText::new(word).size(12.5).strong().color(color));
+        });
+    });
     ui.add_space(4.0);
 
     // Version + update status / action, side by side (the "Update" button sits by the version).
@@ -1430,7 +1492,34 @@ fn mod_detail_ui(
         ui.label(egui::RichText::new(&gm.description).size(13.0).color(pal().text));
     }
 
-    clicked_latest
+    action.update = clicked_latest;
+    action
+}
+
+/// A small iOS-style on/off switch themed with the launcher palette (accent track when on, a faint
+/// track when off, white knob). Flips `*on` and marks the response changed when clicked; animates
+/// the knob/track between states. Mirrors the canonical egui toggle, restyled to match the app.
+fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let desired = egui::vec2(40.0, 22.0);
+    let (rect, mut resp) = ui.allocate_exact_size(desired, egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, *on, ""));
+    if ui.is_rect_visible(rect) {
+        let how_on = ui.ctx().animate_bool(resp.id, *on);
+        let radius = 0.5 * rect.height();
+        let off_track = pal().faint.gamma_multiply(0.6);
+        let track = lerp_color(off_track, pal().accent, how_on);
+        let border = lerp_color(pal().card_border, pal().accent_dk, how_on);
+        ui.painter().rect(rect, egui::Rounding::same(radius), track, egui::Stroke::new(1.0, border));
+        let knob_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
+        ui.painter()
+            .circle_filled(egui::pos2(knob_x, rect.center().y), radius - 3.0, egui::Color32::WHITE);
+    }
+    resp
 }
 
 /// A framed content card (rounded, hairline-bordered).
