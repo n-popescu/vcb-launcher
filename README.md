@@ -26,8 +26,10 @@ loads every mod at startup.
 mod‑author guide: **[docs/MODDING.md](docs/MODDING.md)**.
 
 The top‑right button toggles the launcher's look between **Classic** (the calm dark theme) and
-**Liquid Glass** (luminous, translucent frosted panels over a soft gradient). Your choice is
-remembered between runs.
+**Liquid Glass** (luminous, translucent frosted panels over a soft, gently drifting gradient). Your
+choice is remembered between runs. Both themes are lightly animated — the logo "breathes", picking a
+mod fades its details in, list rows glow on hover with an accent bar marking the selection, update
+badges pulse, and dialogs fade in.
 
 Beside those controls the launcher shows a **Mod Loader** status: *up to date* or *out of
 date*, checked against the [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader)
