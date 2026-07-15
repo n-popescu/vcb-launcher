@@ -37,6 +37,7 @@ const PANEL: egui::Color32 = egui::Color32::from_rgb(0x19, 0x1f, 0x26); // heade
 const PANEL_2: egui::Color32 = egui::Color32::from_rgb(0x11, 0x16, 0x1b); // insets
 const CARD: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x26, 0x2f);
 const CARD_HOVER: egui::Color32 = egui::Color32::from_rgb(0x27, 0x30, 0x3a);
+const CARD_SEL: egui::Color32 = egui::Color32::from_rgb(0x15, 0x35, 0x2d); // selected list row (accent-tinted)
 const CARD_BORDER: egui::Color32 = egui::Color32::from_rgb(0x2b, 0x34, 0x3f); // hairline card edge
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3b, 0xd1, 0x9e);
 const ACCENT_DK: egui::Color32 = egui::Color32::from_rgb(0x2b, 0xa5, 0x7c);
@@ -94,6 +95,13 @@ struct LauncherApp {
     // True while a user-initiated "Check for updates" is in flight, so an "up to date" / error
     // result reports back explicitly (the silent startup check doesn't).
     manual_check: bool,
+    // Mod list master/detail: the selected mod (by id) shown in the right-hand details pane.
+    selected_mod: Option<String>,
+    // Backs "Update all" / single-mod updates: a queue drained one at a time (the per-mod update
+    // worker handles one mod at a time), so clicking Update all updates every out-of-date mod.
+    update_queue: Vec<(gamemods::GameMod, gamemods::ModLatest)>,
+    // Set on the first boot of a freshly-updated launcher, to auto re-apply the patch once.
+    boot_reapply: bool,
 }
 
 impl LauncherApp {
@@ -148,6 +156,9 @@ impl LauncherApp {
             mod_update,
             pending_restart: None,
             manual_check: false,
+            selected_mod: None,
+            update_queue: Vec::new(),
+            boot_reapply: false,
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
@@ -165,6 +176,13 @@ impl LauncherApp {
         // List the mods installed in the game folder and check each for a newer GitHub release.
         app.refresh_game_mods();
         app.spawn_mod_checks(&cc.egui_ctx);
+
+        // First boot of a freshly-updated launcher → auto re-apply the Mod Loader patch once (a new
+        // build may carry a newer seed / patch logic). Recorded so it happens once per new version;
+        // performed on the first frame (see poll_updates) so the window still opens instantly.
+        let is_new_version = cfg.last_launcher_version.as_deref() != Some(update::CURRENT);
+        config::save_last_launcher_version(update::CURRENT);
+        app.boot_reapply = is_new_version && app.modding_on && app.game_dir.is_some();
 
         // Keep the in-game Mod Menu current: pull the latest release from the vcb-modmenu repo
         // into the cache, and — if modding is already enabled — drop that fresh copy into the
@@ -217,6 +235,22 @@ impl LauncherApp {
     /// Per-frame: surface a pending launcher update as a prompt, and act on any finished
     /// download/apply (relaunch, inform, or report failure).
     fn poll_updates(&mut self, ctx: &egui::Context) {
+        // First boot after a launcher update: re-apply the Mod Loader patch once, so the new
+        // build's seed / patch logic lands without the user pressing Re-apply. Done here (not in
+        // new()) so it runs after the window is already showing.
+        if self.boot_reapply {
+            self.boot_reapply = false;
+            if let Some(dir) = self.game_dir.clone() {
+                match self.apply_patch(&dir) {
+                    Ok(()) => {
+                        self.refresh_modding();
+                        self.set_ok("New launcher version — re-applied the Mod Loader patch to vcb.pck.");
+                    }
+                    Err(e) => self.set_err(format!("Couldn't auto re-apply the patch after the update: {}", e)),
+                }
+            }
+        }
+
         // Open the update prompt once, the first time the background check reports one that
         // the user hasn't chosen to skip.
         if !self.update_acked && !self.update_open {
@@ -324,6 +358,54 @@ impl LauncherApp {
             }
             gamemods::UpdatePhase::Idle | gamemods::UpdatePhase::Working(_) => {}
         }
+
+        // Drain the update queue (from "Update all" / single Update) one mod at a time.
+        self.maybe_start_next_queued_update(ctx);
+    }
+
+    /// If no per-mod update is in flight and the queue has entries, start the next one.
+    fn maybe_start_next_queued_update(&mut self, ctx: &egui::Context) {
+        let idle = matches!(*self.mod_update.lock().unwrap(), gamemods::UpdatePhase::Idle);
+        if !idle {
+            return;
+        }
+        if let Some((gm, latest)) = self.update_queue.pop() {
+            gamemods::spawn_update(gm, latest.asset_url, self.mod_update.clone(), ctx.clone());
+        }
+    }
+
+    /// Queue a single mod for update (deduped; skipped if it's already updating). The queue is
+    /// drained by `maybe_start_next_queued_update`.
+    fn queue_update(&mut self, gm: gamemods::GameMod, latest: gamemods::ModLatest) {
+        if let gamemods::UpdatePhase::Working(id) = &*self.mod_update.lock().unwrap() {
+            if *id == gm.id {
+                return;
+            }
+        }
+        if self.update_queue.iter().any(|(g, _)| g.id == gm.id) {
+            return;
+        }
+        self.update_queue.push((gm, latest));
+    }
+
+    /// Queue every installed mod that has an update available ("Update all").
+    fn update_all(&mut self) {
+        let checks = self.mod_checks.lock().unwrap().clone();
+        let mut queued = 0;
+        for gm in self.game_mods.clone() {
+            if let Some(gamemods::ModCheck::Available(l)) = checks.get(&gm.id) {
+                let before = self.update_queue.len();
+                self.queue_update(gm, l.clone());
+                if self.update_queue.len() > before {
+                    queued += 1;
+                }
+            }
+        }
+        if queued == 0 {
+            self.set_ok("All mods are up to date.");
+        } else {
+            self.set_ok(format!("Updating {} mod(s)…", queued));
+        }
     }
 
     fn mod_display_name(&self, id: &str) -> String {
@@ -343,12 +425,6 @@ impl LauncherApp {
         update::spawn_launcher_check(self.launcher_check.clone(), ctx.clone());
         modloader::spawn_check(self.modloader_check.clone(), ctx.clone());
         self.rescan_and_check_mods(ctx);
-    }
-
-    /// Kick off a download+install for one game mod.
-    fn update_game_mod(&mut self, idx: usize, latest: gamemods::ModLatest, ctx: &egui::Context) {
-        let Some(gm) = self.game_mods.get(idx).cloned() else { return };
-        gamemods::spawn_update(gm, latest.asset_url, self.mod_update.clone(), ctx.clone());
     }
 
     /// Close the update prompt, persisting the "don't show again until the next version"
@@ -827,9 +903,10 @@ impl LauncherApp {
         }
     }
 
-    /// "Mods in your game folder": every Mod Loader mod (.zip) installed next to the game, with its
-    /// version and a per-mod update action driven by its GitHub repo (including the in-game Mod
-    /// Menu). Shown only while modding is enabled.
+    /// "Mods in your game folder": a master/detail view like the in-game Mod Menu — a clickable
+    /// list of installed Mod Loader mods on the left (name, version, update indicator) and the
+    /// selected mod's full details on the right (description, repo, and a single-mod Update button
+    /// beside its version). "Update all" and "Check for updates" sit at the top. Modding-only.
     fn game_mods_card(&mut self, ui: &mut egui::Ui) {
         let mods = self.game_mods.clone();
         let checks = self.mod_checks.lock().unwrap().clone();
@@ -837,10 +914,22 @@ impl LauncherApp {
             gamemods::UpdatePhase::Working(id) => Some(id.clone()),
             _ => None,
         };
+        let any_updates = mods
+            .iter()
+            .any(|gm| matches!(checks.get(&gm.id), Some(gamemods::ModCheck::Available(_))));
+
+        // Default the selection to the first mod so the details pane is never empty.
+        if self.selected_mod.as_ref().map(|id| !mods.iter().any(|m| &m.id == id)).unwrap_or(true) {
+            self.selected_mod = mods.first().map(|m| m.id.clone());
+        }
+        let selected = self.selected_mod.clone();
+
         let mut do_check = false;
         let mut do_rescan = false;
         let mut open_folder = false;
-        let mut do_update: Option<(usize, gamemods::ModLatest)> = None;
+        let mut do_update_all = false;
+        let mut new_selection: Option<String> = None;
+        let mut do_update: Option<(gamemods::GameMod, gamemods::ModLatest)> = None;
 
         egui::Frame::none()
             .fill(PANEL_2)
@@ -852,7 +941,14 @@ impl LauncherApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Mods in your game folder").size(13.0).strong().color(TEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(pill_button("Check for updates")).clicked() {
+                        if ui
+                            .add_enabled(any_updates, primary_button("Update all"))
+                            .on_hover_text("Update every installed mod that has a newer release")
+                            .clicked()
+                        {
+                            do_update_all = true;
+                        }
+                        if ui.add(pill_button("Check for updates")).on_hover_text("Check GitHub for newer versions of the launcher and every installed mod").clicked() {
                             do_check = true;
                         }
                         if ui.add(pill_button("⟳")).on_hover_text("Rescan the game's mods folder").clicked() {
@@ -871,48 +967,69 @@ impl LauncherApp {
                             .size(12.0)
                             .color(DIM),
                     );
+                    return;
                 }
 
-                for (i, gm) in mods.iter().enumerate() {
-                    let is_working = working.as_deref() == Some(gm.id.as_str());
-                    egui::Frame::none()
-                        .fill(CARD)
-                        .rounding(egui::Rounding::same(12.0))
-                        .stroke(egui::Stroke::new(1.0, CARD_BORDER))
-                        .inner_margin(egui::Margin::symmetric(14.0, 11.0))
-                        .outer_margin(egui::Margin { top: 0.0, bottom: 8.0, left: 0.0, right: 0.0 })
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label(egui::RichText::new(gm.display_name()).size(14.0).strong().color(TEXT));
-                                    let sub = if gm.version.is_empty() {
-                                        gm.id.clone()
-                                    } else {
-                                        format!("v{}  ·  {}", gm.version, gm.id)
-                                    };
-                                    ui.label(egui::RichText::new(sub).size(11.0).color(DIM));
-                                    if !gm.website.is_empty() {
-                                        let label = match &gm.repo {
-                                            Some((o, r)) => format!("{o}/{r}"),
-                                            None => gm.website.clone(),
-                                        };
-                                        ui.hyperlink_to(egui::RichText::new(label).size(11.0).color(ACCENT), &gm.website);
-                                    }
-                                });
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if mod_status_ui(ui, checks.get(&gm.id), is_working) {
-                                        if let Some(gamemods::ModCheck::Available(l)) = checks.get(&gm.id) {
-                                            do_update = Some((i, l.clone()));
+                // Fixed-height master/detail body (bounded so its inner lists scroll even though the
+                // whole tab is inside an outer scroll area).
+                let body_h = 300.0_f32;
+                let total_w = ui.available_width();
+                let list_w = (total_w * 0.42).clamp(170.0, 300.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(total_w, body_h),
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |ui| {
+                        // Left: the mod list.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(list_w, body_h),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(list_w);
+                                egui::ScrollArea::vertical()
+                                    .id_source("gm_list")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        for gm in &mods {
+                                            let is_working = working.as_deref() == Some(gm.id.as_str());
+                                            let is_sel = selected.as_deref() == Some(gm.id.as_str());
+                                            if mod_list_row(ui, gm, checks.get(&gm.id), is_working, is_sel) {
+                                                new_selection = Some(gm.id.clone());
+                                            }
                                         }
+                                    });
+                            },
+                        );
+                        ui.separator();
+                        // Right: details for the selected mod.
+                        egui::ScrollArea::vertical()
+                            .id_source("gm_detail")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                if let Some(gm) = mods.iter().find(|m| Some(m.id.as_str()) == selected.as_deref()) {
+                                    let is_working = working.as_deref() == Some(gm.id.as_str());
+                                    if let Some(latest) = mod_detail_ui(ui, gm, checks.get(&gm.id), is_working) {
+                                        do_update = Some((gm.clone(), latest));
                                     }
-                                });
+                                } else {
+                                    ui.add_space(20.0);
+                                    ui.label(egui::RichText::new("Select a mod on the left.").size(13.0).color(DIM));
+                                }
                             });
-                        });
-                }
+                    },
+                );
             });
 
         let ctx = ui.ctx().clone();
+        if let Some(id) = new_selection {
+            self.selected_mod = Some(id);
+        }
+        if do_update_all {
+            self.update_all();
+        }
+        if let Some((gm, latest)) = do_update {
+            self.queue_update(gm, latest);
+        }
         if do_check {
             self.check_for_updates(&ctx);
         }
@@ -924,9 +1041,6 @@ impl LauncherApp {
             if let Some(d) = self.game_dir.clone() {
                 open_path(&patch::mods_dir(&d));
             }
-        }
-        if let Some((i, latest)) = do_update {
-            self.update_game_mod(i, latest, &ctx);
         }
     }
 
@@ -1063,49 +1177,145 @@ impl LauncherApp {
 
 // --- widgets --------------------------------------------------------------------------
 
-/// Render one game mod's update status in a right-to-left region; returns true if its "Update"
-/// button was clicked this frame. Kept free-standing so `game_mods_card` doesn't borrow `self`
-/// inside the layout closures.
-fn mod_status_ui(ui: &mut egui::Ui, check: Option<&gamemods::ModCheck>, is_working: bool) -> bool {
-    if is_working {
-        ui.spinner();
-        ui.label(egui::RichText::new("Updating…").size(11.0).color(DIM));
-        return false;
+/// One row in the mod list (left pane): the mod name, its version, and a compact update
+/// indicator. Clickable + selectable; returns true when clicked this frame. Free-standing so
+/// `game_mods_card` doesn't borrow `self` inside the layout closures.
+fn mod_list_row(
+    ui: &mut egui::Ui,
+    gm: &gamemods::GameMod,
+    check: Option<&gamemods::ModCheck>,
+    is_working: bool,
+    selected: bool,
+) -> bool {
+    let fill = if selected { CARD_SEL } else { CARD };
+    let stroke = if selected {
+        egui::Stroke::new(1.0, ACCENT)
+    } else {
+        egui::Stroke::new(1.0, CARD_BORDER)
+    };
+    let mut resp = egui::Frame::none()
+        .fill(fill)
+        .rounding(egui::Rounding::same(10.0))
+        .stroke(stroke)
+        .inner_margin(egui::Margin::symmetric(12.0, 9.0))
+        .outer_margin(egui::Margin { top: 0.0, bottom: 6.0, left: 0.0, right: 0.0 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(gm.display_name()).size(13.5).strong().color(TEXT));
+                ui.horizontal(|ui| {
+                    let ver = if gm.version.is_empty() { "—".to_string() } else { format!("v{}", gm.version) };
+                    ui.label(egui::RichText::new(ver).size(11.0).color(DIM));
+                    if is_working {
+                        ui.label(egui::RichText::new("· updating…").size(11.0).color(DIM));
+                    } else {
+                        match check {
+                            Some(gamemods::ModCheck::Available(l)) => {
+                                ui.label(egui::RichText::new(format!("⬆ v{}", l.version)).size(11.0).color(YELLOW))
+                                    .on_hover_text("Update available");
+                            }
+                            Some(gamemods::ModCheck::UpToDate) => {
+                                ui.label(egui::RichText::new("●").size(10.0).color(ACCENT))
+                                    .on_hover_text("Up to date");
+                            }
+                            Some(gamemods::ModCheck::Checking) => {
+                                ui.label(egui::RichText::new("· checking…").size(11.0).color(FAINT));
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            });
+        })
+        .response
+        .interact(egui::Sense::click());
+    resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.hovered() && !selected {
+        ui.painter().rect_filled(
+            resp.rect,
+            egui::Rounding::same(10.0),
+            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 8),
+        );
     }
-    match check {
-        Some(gamemods::ModCheck::Available(l)) => {
-            let clicked = ui
-                .add(pill_button("Update"))
-                .on_hover_text(format!("Download v{} and replace this mod", l.version))
-                .clicked();
-            ui.label(egui::RichText::new(format!("v{} available", l.version)).size(11.0).color(YELLOW));
-            ui.label(egui::RichText::new("⬆").size(12.0).color(YELLOW));
-            clicked
-        }
-        Some(gamemods::ModCheck::UpToDate) => {
-            ui.label(egui::RichText::new("up to date").size(11.0).color(DIM));
-            ui.label(egui::RichText::new("●").size(11.0).color(ACCENT));
-            false
-        }
-        Some(gamemods::ModCheck::Checking) => {
+    resp.clicked()
+}
+
+/// The details pane (right) for the selected mod: name, version + a single-mod Update button when
+/// an update is available, repo link, and the full description. Returns the available `ModLatest`
+/// when its Update button is clicked this frame.
+fn mod_detail_ui(
+    ui: &mut egui::Ui,
+    gm: &gamemods::GameMod,
+    check: Option<&gamemods::ModCheck>,
+    is_working: bool,
+) -> Option<gamemods::ModLatest> {
+    let mut clicked_latest: Option<gamemods::ModLatest> = None;
+
+    ui.label(egui::RichText::new(gm.display_name()).size(20.0).strong().color(TEXT));
+    ui.add_space(4.0);
+
+    // Version + update status / action, side by side (the "Update" button sits by the version).
+    ui.horizontal(|ui| {
+        let ver = if gm.version.is_empty() { "no version".to_string() } else { format!("v{}", gm.version) };
+        ui.label(egui::RichText::new(ver).size(13.0).color(DIM));
+        if is_working {
             ui.spinner();
-            false
+            ui.label(egui::RichText::new("Updating…").size(12.0).color(DIM));
+        } else {
+            match check {
+                Some(gamemods::ModCheck::Available(l)) => {
+                    if ui
+                        .add(pill_button("Update"))
+                        .on_hover_text(format!("Download v{} and replace this mod", l.version))
+                        .clicked()
+                    {
+                        clicked_latest = Some(l.clone());
+                    }
+                    ui.label(egui::RichText::new(format!("⬆ v{} available", l.version)).size(12.0).color(YELLOW));
+                }
+                Some(gamemods::ModCheck::UpToDate) => {
+                    ui.label(egui::RichText::new("●").size(12.0).color(ACCENT));
+                    ui.label(egui::RichText::new("up to date").size(12.0).color(DIM));
+                }
+                Some(gamemods::ModCheck::Checking) => {
+                    ui.spinner();
+                    ui.label(egui::RichText::new("checking…").size(12.0).color(FAINT));
+                }
+                Some(gamemods::ModCheck::NoRepo) => {
+                    ui.label(egui::RichText::new("no update source").size(12.0).color(FAINT))
+                        .on_hover_text("This mod's manifest has no GitHub website_url, so the launcher can't check for updates");
+                }
+                Some(gamemods::ModCheck::Error(e)) => {
+                    ui.label(egui::RichText::new("check failed").size(12.0).color(FAINT)).on_hover_text(e.clone());
+                }
+                None => {
+                    ui.label(egui::RichText::new("not checked").size(12.0).color(FAINT));
+                }
+            }
         }
-        Some(gamemods::ModCheck::NoRepo) => {
-            ui.label(egui::RichText::new("no update source").size(11.0).color(FAINT))
-                .on_hover_text("This mod's manifest has no GitHub website_url, so the launcher can't check for updates");
-            false
-        }
-        Some(gamemods::ModCheck::Error(e)) => {
-            ui.label(egui::RichText::new("check failed").size(11.0).color(FAINT))
-                .on_hover_text(e.clone());
-            false
-        }
-        None => {
-            ui.label(egui::RichText::new("not checked").size(11.0).color(FAINT));
-            false
-        }
+    });
+
+    ui.add_space(6.0);
+    if !gm.website.is_empty() {
+        let label = match &gm.repo {
+            Some((o, r)) => format!("{o}/{r}"),
+            None => gm.website.clone(),
+        };
+        ui.hyperlink_to(egui::RichText::new(label).size(12.0).color(ACCENT), &gm.website);
     }
+    ui.label(egui::RichText::new(format!("id: {}", gm.id)).size(11.0).color(FAINT));
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.add_space(10.0);
+
+    if gm.description.trim().is_empty() {
+        ui.label(egui::RichText::new("This mod's manifest has no description.").size(12.0).color(DIM));
+    } else {
+        ui.label(egui::RichText::new(&gm.description).size(13.0).color(TEXT));
+    }
+
+    clicked_latest
 }
 
 /// A framed content card (rounded, hairline-bordered).

@@ -56,11 +56,23 @@ GitHub for a newer launcher *and* for newer versions of every mod in your game f
 click. When a launcher update is available it downloads the new build, swaps it in, and offers
 **Restart now** (the update also applies the next time you open the launcher).
 
-The **Mods in your game folder** list shows every Mod Loader mod (`.zip`) next to the game —
-including the in‑game Mod Menu — with its version and a link to its GitHub repo. Each mod is
-checked against its repo's latest release (from the manifest's `website_url`); when a newer
-version exists, an **Update** button downloads it and replaces the mod in place. Mods whose
-manifest has no GitHub `website_url` are listed but can't be auto‑updated.
+The **Mods in your game folder** box is a master/detail view, like the in-game Mod Menu: a
+clickable **list on the left** (each mod's name, version, and an update indicator), and the
+selected mod's **full details on the right** — its description, repository link, and a single-mod
+**Update** button beside the version when a newer release exists. **Update all** (top of the box)
+updates every out-of-date mod in one go; **Check for updates** re-checks everything. Each mod is
+checked against its repo's latest release (from the manifest's `website_url`); mods whose manifest
+has no GitHub `website_url` are listed but can't be auto-updated.
+
+### Auto re-apply after an update
+
+The launcher keeps `vcb.pck` patched for you automatically:
+
+- After it **updates the Godot Mod Loader** (the **Update** button by the Mod Loader status), it
+  re-applies the patch from your pristine backup so the new Mod Loader is baked in immediately.
+- On the **first launch of a newly-updated launcher**, if modding is enabled it re-applies the
+  patch once, so a new build's Mod Loader seed / patch improvements land without you pressing
+  **Re-apply**.
 
 ## Settings
 
@@ -150,8 +162,9 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
   place to update it (with unit tests for the manifest/repo parsing, asset selection, and scan).
 - `src/steam.rs` — Steam library discovery (Windows registry + common paths; Linux
   native + Flatpak) and game-folder detection.
-- `src/config.rs` — persists the chosen game folder and the skipped‑update version in the OS's
-  per‑user config directory (see [Settings](#settings)), migrating a legacy next‑to‑the‑exe file.
+- `src/config.rs` — persists the chosen game folder, the skipped‑update version, and the
+  last‑run launcher version (for the first‑boot auto re‑apply) in the OS's per‑user config
+  directory (see [Settings](#settings)), migrating a legacy next‑to‑the‑exe file.
 - `src/net.rs` — a tiny blocking HTTPS client (`ureq` + rustls) used by the update checker.
 - `src/update.rs` — the self-updater: checks GitHub Releases for a newer launcher, compares
   versions, and downloads + swaps in the right per-platform artifact (with unit tests for the
