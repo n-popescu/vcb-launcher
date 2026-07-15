@@ -22,6 +22,11 @@ pub struct Config {
     /// this shows up; an empty/absent value means "never skipped".
     #[serde(default)]
     pub skip_launcher_version: Option<String>,
+    /// The launcher version that last ran. Used to detect the first boot of a freshly-updated
+    /// launcher, so we can auto re-apply the Mod Loader patch (the new build may carry a newer
+    /// seed / patch logic). Absent on a first-ever run.
+    #[serde(default)]
+    pub last_launcher_version: Option<String>,
 }
 
 const FILE_NAME: &str = "launcher_config.json";
@@ -91,5 +96,12 @@ pub fn save_game_dir(dir: &Path) {
 pub fn save_skip_launcher_version(version: Option<String>) {
     let mut cfg = load();
     cfg.skip_launcher_version = version;
+    save(&cfg);
+}
+
+/// Record the launcher version that just ran (for the "first boot of a new version" check).
+pub fn save_last_launcher_version(version: &str) {
+    let mut cfg = load();
+    cfg.last_launcher_version = Some(version.to_string());
     save(&cfg);
 }

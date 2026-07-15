@@ -26,6 +26,7 @@ pub struct GameMod {
     pub name: String,                    // display name from the manifest
     pub version: String,                 // version_number from the manifest
     pub website: String,                 // website_url from the manifest
+    pub description: String,             // description from the manifest
     pub repo: Option<(String, String)>,  // (owner, repo) parsed from the website, if it's GitHub
 }
 
@@ -70,6 +71,7 @@ fn read_mod(zip_path: &Path) -> Option<GameMod> {
         name,
         version: m.version,
         website: m.website.clone(),
+        description: m.description,
         repo: repo_from_url(&m.website),
     })
 }
@@ -78,6 +80,7 @@ struct Manifest {
     name: String,
     version: String,
     website: String,
+    description: String,
 }
 
 fn parse_manifest(json: &[u8]) -> Option<Manifest> {
@@ -87,6 +90,7 @@ fn parse_manifest(json: &[u8]) -> Option<Manifest> {
         name: get("name"),
         version: get("version_number"),
         website: get("website_url"),
+        description: get("description"),
     })
 }
 
