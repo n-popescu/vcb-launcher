@@ -212,6 +212,10 @@ struct LauncherApp {
     boot_reapply: bool,
     // The active UI theme (Classic / Liquid Glass), toggled from the header and persisted.
     theme: Theme,
+    // Mod details-pane transition: the id last shown + when the current one appeared, so a change
+    // of selection fades/rises the details in.
+    detail_last_id: Option<String>,
+    detail_anim_start: f64,
 }
 
 impl LauncherApp {
@@ -278,6 +282,8 @@ impl LauncherApp {
             update_queue: Vec::new(),
             boot_reapply: false,
             theme,
+            detail_last_id: None,
+            detail_anim_start: 0.0,
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
@@ -747,9 +753,11 @@ impl eframe::App for LauncherApp {
         self.poll_updates(ctx);
 
         // Liquid Glass: wash a soft gradient behind everything; the translucent panels frost over
-        // it. Painted before the panels are shown so it sits underneath them.
+        // it. Painted before the panels are shown so it sits underneath them. The `t` phase makes
+        // the highlight drift slowly, for a living "liquid" feel.
+        let t = ctx.input(|i| i.time) as f32;
         if self.theme == Theme::Glass {
-            paint_glass_background(ctx, &pal_for(self.theme));
+            paint_glass_background(ctx, &pal_for(self.theme), t);
         }
 
         egui::TopBottomPanel::top("header")
@@ -767,7 +775,15 @@ impl eframe::App for LauncherApp {
         // The self-update prompt renders as a centered modal over everything.
         if self.update_open {
             self.update_modal(ctx);
+        } else {
+            // Keep its fade parked at 0 while closed, so it actually eases in when it next opens.
+            ctx.animate_bool(egui::Id::new("update_modal_appear"), false);
         }
+
+        // Keep a gentle animation heartbeat going (~30 fps) so the ambient motion — the breathing
+        // logo, and the Liquid Glass highlight drift — keeps ticking even when the user is idle.
+        // egui's own `animate_*` transitions request their own repaints while in flight.
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 }
 
@@ -776,7 +792,7 @@ impl LauncherApp {
         let mut toggle_theme = false;
         ui.horizontal(|ui| {
             let (logo_rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
-            paint_logo(ui.painter(), logo_rect);
+            paint_logo(ui.painter(), logo_rect, ui.input(|i| i.time) as f32);
             ui.add_space(8.0);
             ui.label(egui::RichText::new("VCB").size(22.0).strong().color(pal().accent));
             ui.label(egui::RichText::new("Mod Launcher").size(22.0).strong().color(pal().text));
@@ -1016,6 +1032,14 @@ impl LauncherApp {
         let mut new_selection: Option<String> = None;
         let mut do_update: Option<(gamemods::GameMod, gamemods::ModLatest)> = None;
 
+        // Details-pane transition: when the shown mod changes, fade + rise the new details in.
+        let now = ui.ctx().input(|i| i.time);
+        if self.detail_last_id.as_deref() != selected.as_deref() {
+            self.detail_last_id = selected.clone();
+            self.detail_anim_start = now;
+        }
+        let appear = ease_out_cubic(((now - self.detail_anim_start) / 0.22) as f32);
+
         // Header row: title + Update all (top of the box) + rescan + open folder.
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Mods in your game folder").size(15.0).strong().color(pal().text));
@@ -1076,6 +1100,9 @@ impl LauncherApp {
                         .id_source("gm_detail")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            // Fade + a small downward-rise as the newly-selected mod's details settle.
+                            ui.set_opacity(appear);
+                            ui.add_space((1.0 - appear) * 10.0);
                             if let Some(gm) = mods.iter().find(|m| Some(m.id.as_str()) == selected.as_deref()) {
                                 let is_working = working.as_deref() == Some(gm.id.as_str());
                                 if let Some(latest) = mod_detail_ui(ui, gm, checks.get(&gm.id), is_working) {
@@ -1120,6 +1147,9 @@ impl LauncherApp {
         let has_asset = info.asset.is_some();
         let downloaded = self.pending_restart.is_some();
 
+        // Fade the whole prompt in when it opens.
+        let appear = ctx.animate_bool(egui::Id::new("update_modal_appear"), true);
+
         // Dim the window behind the dialog and swallow clicks.
         let screen = ctx.screen_rect();
         egui::Area::new("update_dim".into())
@@ -1128,14 +1158,15 @@ impl LauncherApp {
             .interactable(true)
             .show(ctx, |ui| {
                 let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
-                ui.painter().rect_filled(rect, egui::Rounding::ZERO, egui::Color32::from_black_alpha(150));
+                ui.painter().rect_filled(rect, egui::Rounding::ZERO, egui::Color32::from_black_alpha((150.0 * appear) as u8));
                 let _ = resp;
             });
 
         egui::Area::new("update_prompt".into())
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, (1.0 - appear) * 12.0))
             .show(ctx, |ui| {
+              ui.set_opacity(appear);
               egui::Frame::none()
                     .fill(pal().panel)
                     .rounding(egui::Rounding::same(14.0))
@@ -1277,7 +1308,7 @@ fn mod_list_row(
                     } else {
                         match check {
                             Some(gamemods::ModCheck::Available(l)) => {
-                                ui.label(egui::RichText::new(format!("⬆ v{}", l.version)).size(11.0).color(pal().yellow))
+                                ui.label(egui::RichText::new(format!("⬆ v{}", l.version)).size(11.0).color(pulse_color(ui, pal().yellow)))
                                     .on_hover_text("Update available");
                             }
                             Some(gamemods::ModCheck::UpToDate) => {
@@ -1296,11 +1327,29 @@ fn mod_list_row(
         .response
         .interact(egui::Sense::click());
     resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    if resp.hovered() && !selected {
+
+    // Animated hover wash (fades in/out instead of popping).
+    let hover_t = ui.ctx().animate_bool(egui::Id::new(("modrow_hover", &gm.id)), resp.hovered() && !selected);
+    if hover_t > 0.001 {
         ui.painter().rect_filled(
             resp.rect,
             egui::Rounding::same(10.0),
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 8),
+            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, (10.0 * hover_t) as u8),
+        );
+    }
+    // Animated accent bar on the left of the selected row (grows/fades with the selection).
+    let sel_t = ui.ctx().animate_bool(egui::Id::new(("modrow_sel", &gm.id)), selected);
+    if sel_t > 0.001 {
+        let r = resp.rect;
+        let bar_h = (r.height() - 12.0).max(0.0) * sel_t;
+        let bar = egui::Rect::from_center_size(
+            egui::pos2(r.left() + 3.0, r.center().y),
+            egui::vec2(3.0, bar_h),
+        );
+        ui.painter().rect_filled(
+            bar,
+            egui::Rounding::same(2.0),
+            pal().accent.gamma_multiply(sel_t),
         );
     }
     resp.clicked()
@@ -1337,7 +1386,7 @@ fn mod_detail_ui(
                     {
                         clicked_latest = Some(l.clone());
                     }
-                    ui.label(egui::RichText::new(format!("⬆ v{} available", l.version)).size(12.0).color(pal().yellow));
+                    ui.label(egui::RichText::new(format!("⬆ v{} available", l.version)).size(12.0).color(pulse_color(ui, pal().yellow)));
                 }
                 Some(gamemods::ModCheck::UpToDate) => {
                     ui.label(egui::RichText::new("●").size(12.0).color(pal().accent));
@@ -1468,8 +1517,9 @@ fn how_it_works(ui: &mut egui::Ui) {
 }
 
 /// The app's little logo — a circuit chip with pins and a lit central via — drawn as
-/// vectors so it stays crisp at any DPI. Matches the window icon in `icon.rs`.
-fn paint_logo(p: &egui::Painter, rect: egui::Rect) {
+/// vectors so it stays crisp at any DPI. Matches the window icon in `icon.rs`. The via gently
+/// "breathes" (a soft pulsing glow) using the `t` time phase, so the logo feels alive.
+fn paint_logo(p: &egui::Painter, rect: egui::Rect, t: f32) {
     let c = rect.center();
     let s = rect.width();
     let body = egui::Rect::from_center_size(c, rect.size() * 0.72);
@@ -1494,7 +1544,10 @@ fn paint_logo(p: &egui::Painter, rect: egui::Rect) {
     p.line_segment([c, egui::pos2(body.right() - 2.0, c.y)], tr);
     p.line_segment([c, egui::pos2(c.x, body.bottom() - 2.0)], tr);
 
-    // Lit via.
+    // Breathing halo around the via (0.5 Hz-ish), then the lit via itself.
+    let pulse = 0.5 + 0.5 * (t * 2.2).sin(); // 0..1
+    let halo = pal().accent.gamma_multiply(0.10 + 0.22 * pulse);
+    p.circle_filled(c, 3.0 + 3.0 * pulse, halo);
     p.circle_filled(c, 3.0, pal().accent);
     p.circle_filled(c, 1.2, pal().bg);
 }
@@ -1544,28 +1597,49 @@ fn setup_style(ctx: &egui::Context) {
 
 /// Paint the Liquid Glass background gradient behind everything (a soft vertical wash that the
 /// translucent panels frost over). Drawn into the background layer before the panels are shown.
-fn paint_glass_background(ctx: &egui::Context, p: &Pal) {
+/// Two luminous blobs drift slowly (driven by `t`) so the wash looks like it's gently flowing.
+fn paint_glass_background(ctx: &egui::Context, p: &Pal, t: f32) {
     let rect = ctx.screen_rect();
     let painter = ctx.layer_painter(egui::LayerId::background());
     let steps = 48;
     let h = rect.height() / steps as f32;
     for i in 0..steps {
-        let t = i as f32 / (steps as f32 - 1.0);
-        let color = lerp_color(p.grad_top, p.grad_bottom, t);
+        let f = i as f32 / (steps as f32 - 1.0);
+        let color = lerp_color(p.grad_top, p.grad_bottom, f);
         let y = rect.top() + i as f32 * h;
         // +1px overlap so no seams show between bands.
         let band = egui::Rect::from_min_size(egui::pos2(rect.left(), y), egui::vec2(rect.width(), h + 1.0));
         painter.rect_filled(band, egui::Rounding::ZERO, color);
     }
-    // A gentle luminous glow in the upper-left, like light catching glass.
-    let glow = egui::Color32::from_rgba_unmultiplied(0x6c, 0xd8, 0xff, 22);
-    painter.circle_filled(rect.left_top() + egui::vec2(rect.width() * 0.22, 0.0), rect.width() * 0.5, glow);
+    // Two gentle luminous blobs that orbit slowly, like light moving through glass.
+    let w = rect.width();
+    let hgt = rect.height();
+    let blob1 = rect.left_top()
+        + egui::vec2(w * (0.24 + 0.06 * (t * 0.23).sin()), hgt * (0.05 + 0.05 * (t * 0.31).cos()));
+    let blob2 = rect.left_top()
+        + egui::vec2(w * (0.78 + 0.05 * (t * 0.19).cos()), hgt * (0.9 + 0.05 * (t * 0.27).sin()));
+    painter.circle_filled(blob1, w * 0.5, egui::Color32::from_rgba_unmultiplied(0x6c, 0xd8, 0xff, 20));
+    painter.circle_filled(blob2, w * 0.42, egui::Color32::from_rgba_unmultiplied(0x8a, 0x7c, 0xff, 16));
 }
 
 /// Linear blend between two opaque colours.
 fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     egui::Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
+
+/// Ease-out cubic (fast start, gentle settle) for UI transitions. Output clamped to 0..1.
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// A colour that gently pulses its brightness over time — used to draw the eye to "update
+/// available" badges. Subtle (never fully dims).
+fn pulse_color(ui: &egui::Ui, base: egui::Color32) -> egui::Color32 {
+    let t = ui.input(|i| i.time) as f32;
+    let pulse = 0.78 + 0.22 * (0.5 + 0.5 * (t * 3.0).sin());
+    base.gamma_multiply(pulse)
 }
 
 /// Open a folder in the OS file manager.
