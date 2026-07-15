@@ -12,14 +12,12 @@
 //! Mod Menu (the in-game list is a convenience, not required for modding to work).
 
 use crate::net;
-use crate::update::{self, Asset};
 use std::path::{Path, PathBuf};
 
 /// Upstream repo that publishes the Mod Menu releases.
 pub const OWNER: &str = "n-popescu";
 pub const REPO: &str = "vcb-modmenu";
 
-const GH_ACCEPT: &str = "application/vnd.github+json";
 
 /// The release asset name AND the file name written into the game's `mods/` folder.
 pub const MOD_MENU_ZIP: &str = "npopescu-ModMenu.zip";
@@ -72,30 +70,16 @@ pub struct Latest {
     pub zip_url: String,
 }
 
-fn latest_release_url() -> String {
-    format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/latest")
-}
-
-/// Query the Mod Menu's latest GitHub release: its version (tag without a leading `v`) and the
-/// download URL of the `npopescu-ModMenu.zip` asset.
+/// Query the Mod Menu's latest release WITHOUT the rate-limited REST API: the version comes from
+/// the repo's releases Atom feed and the download URL is the github.com
+/// `releases/latest/download/npopescu-ModMenu.zip` CDN redirect (see `github.rs`).
+/// `download_and_cache` verifies the downloaded zip is a real Mod Menu package.
 pub fn check_latest() -> Result<Latest, String> {
-    let json = net::get_text(&latest_release_url(), GH_ACCEPT)?;
-    let release = update::parse_release(&json)
-        .ok_or_else(|| "couldn't parse the Mod Menu release response".to_string())?;
-    let asset = pick_zip_asset(&release.assets)
-        .ok_or_else(|| "the Mod Menu release has no downloadable zip".to_string())?;
+    let tag = crate::github::latest_release_tag(OWNER, REPO)?;
     Ok(Latest {
-        version: release.tag.trim_start_matches(['v', 'V']).to_string(),
-        zip_url: asset.url.clone(),
+        version: tag.trim_start_matches(['v', 'V']).to_string(),
+        zip_url: crate::github::latest_asset_download_url(OWNER, REPO, MOD_MENU_ZIP),
     })
-}
-
-/// The Mod Menu zip asset: prefer the exact `npopescu-ModMenu.zip`, else any `.zip`.
-fn pick_zip_asset(assets: &[Asset]) -> Option<&Asset> {
-    assets
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case(MOD_MENU_ZIP))
-        .or_else(|| assets.iter().find(|a| a.name.to_ascii_lowercase().ends_with(".zip")))
 }
 
 /// Download the zip, verify it's a real Mod Menu package, and replace the cache with it. Records
@@ -190,27 +174,6 @@ mod tests {
             zip.write_all(b"{}").unwrap();
         }
         zip.finish().unwrap().into_inner()
-    }
-
-    #[test]
-    fn picks_the_named_zip_asset() {
-        let assets = vec![
-            Asset { name: "notes.txt".into(), url: "u1".into() },
-            Asset { name: "npopescu-ModMenu.zip".into(), url: "u2".into() },
-        ];
-        assert_eq!(pick_zip_asset(&assets).unwrap().url, "u2");
-    }
-
-    #[test]
-    fn falls_back_to_any_zip_asset() {
-        let assets = vec![Asset { name: "ModMenu-1.3.0.zip".into(), url: "z".into() }];
-        assert_eq!(pick_zip_asset(&assets).unwrap().url, "z");
-    }
-
-    #[test]
-    fn no_zip_asset_is_none() {
-        let assets = vec![Asset { name: "readme.md".into(), url: "x".into() }];
-        assert!(pick_zip_asset(&assets).is_none());
     }
 
     #[test]

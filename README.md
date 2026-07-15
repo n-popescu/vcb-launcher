@@ -68,6 +68,19 @@ updates every out-of-date mod in one go; **Check for updates** re-checks everyth
 checked against its repo's latest release (from the manifest's `website_url`); mods whose manifest
 has no GitHub `website_url` are listed but can't be auto-updated.
 
+Update checks read each repo's **releases Atom feed** (`github.com/<owner>/<repo>/releases.atom`)
+and download from the **`releases/latest/download/…` CDN URL**, both served by github.com rather
+than the `api.github.com` REST API. That matters because the unauthenticated REST API is limited to
+**60 requests/hour per IP**, and checking a folder full of mods used to fan out one API call per mod
+(plus the launcher, Mod Loader, and Mod Menu) — easily enough to hit the cap and get an HTTP 403
+"rate limit" error. The Atom feed isn't subject to that limit, so a full check now costs the API
+almost nothing.
+
+**Enable / disable a mod** with the **switch at the top of its details pane** — no need to move
+files by hand. Turning a mod off keeps it installed (and in the list, greyed with an *off* tag) but
+parks its package as `<name>.zip.disabled` so the Mod Loader skips it on the next launch; turning it
+back on restores the `.zip`. This lets you keep a mod around without loading it.
+
 ### Auto re-apply after an update
 
 The launcher keeps `vcb.pck` patched for you automatically:
@@ -155,21 +168,29 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
   (`const MODLOADER_VERSION`). The launcher patches from the cached copy when present, else
   the seed embedded by `build.rs`.
 - `src/modmenu.rs` — the web‑updatable **Mod Menu** (`Options ▸ Mods`): a `modmenu/` cache
-  next to the launcher, GitHub latest‑release lookup + `npopescu-ModMenu.zip` download, and
+  next to the launcher, latest‑release lookup **via the Atom feed** (`src/github.rs`) +
+  `npopescu-ModMenu.zip` CDN download, and
   install into the game's `mods/` folder on enable/Re‑apply. It's fetched from its own repo
   ([`vcb-modmenu`](https://github.com/n-popescu/vcb-modmenu)) at runtime — no longer vendored —
   so it always picks up the latest upstream release. Best‑effort: an offline first run with no
   cached copy simply skips it.
 - `src/gamemods.rs` — the **installed‑mods** list: scans the game's `mods/` folder for Mod
-  Loader `.zip` packages, reads each manifest (name / `version_number` / `website_url`),
-  derives its GitHub repo, checks that repo's latest release, and downloads + swaps the zip in
-  place to update it (with unit tests for the manifest/repo parsing, asset selection, and scan).
+  Loader `.zip` packages (enabled) **and `.zip.disabled` ones** (parked/disabled), reads each
+  manifest (name / `version_number` / `website_url`), derives its GitHub repo, checks that repo's
+  latest release **via the Atom feed** (`src/github.rs`, no REST‑API call per mod), downloads +
+  swaps the zip in place to update it, and **enables/disables a mod by renaming** its package
+  `<name>.zip` ⇄ `<name>.zip.disabled` (with unit tests for the manifest/repo parsing, scan, and
+  the enable/disable rename).
 - `src/steam.rs` — Steam library discovery (Windows registry + common paths; Linux
   native + Flatpak) and game-folder detection.
 - `src/config.rs` — persists the chosen game folder, the skipped‑update version, and the
   last‑run launcher version (for the first‑boot auto re‑apply) in the OS's per‑user config
   directory (see [Settings](#settings)), migrating a legacy next‑to‑the‑exe file.
 - `src/net.rs` — a tiny blocking HTTPS client (`ureq` + rustls) used by the update checker.
+- `src/github.rs` — reads a repo's latest release **without the rate‑limited REST API**: it parses
+  the newest tag out of the `releases.atom` feed and builds the `releases/latest/download/<asset>`
+  CDN URL (both `github.com`, not `api.github.com`), so per‑mod update checks don't burn the 60‑per‑
+  hour unauthenticated limit (with unit tests for the Atom tag parse + URL build).
 - `src/update.rs` — the self-updater: checks GitHub Releases for a newer launcher, compares
   versions, and downloads + swaps in the right per-platform artifact (with unit tests for the
   version compare and asset selection).
