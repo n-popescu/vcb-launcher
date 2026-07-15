@@ -13,7 +13,7 @@
 //! offsets are absolute from the start of a standalone `.pck`.
 
 use std::fs::File;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const PCK_MAGIC: u32 = 0x4350_4447; // bytes 'G','D','P','C' read little-endian
@@ -36,13 +36,6 @@ fn read_u64(f: &mut impl Read) -> io::Result<u64> {
 pub fn extract_file(pck_path: &Path, want: &str) -> io::Result<Option<Vec<u8>>> {
     let mut f = File::open(pck_path)?;
     extract_from_reader(&mut f, want)
-}
-
-/// Same as [`extract_file`], but for a `.pck` already held in memory — used to read a mod's
-/// metadata out of a `.pck` that lives *inside* a zipped mod.
-pub fn extract_from_bytes(bytes: &[u8], want: &str) -> io::Result<Option<Vec<u8>>> {
-    let mut c = Cursor::new(bytes);
-    extract_from_reader(&mut c, want)
 }
 
 fn extract_from_reader<R: Read + Seek>(f: &mut R, want: &str) -> io::Result<Option<Vec<u8>>> {
@@ -151,10 +144,6 @@ mod tests {
 
         let got = extract_file(&path, "res://mod.json").unwrap();
         assert_eq!(got.as_deref(), Some(&json[..]));
-
-        // The in-memory path (used for .pck files inside a zipped mod) agrees.
-        let got_bytes = extract_from_bytes(&pck, "res://mod.json").unwrap();
-        assert_eq!(got_bytes.as_deref(), Some(&json[..]));
 
         let missing = extract_file(&path, "res://nope.json").unwrap();
         assert!(missing.is_none());
