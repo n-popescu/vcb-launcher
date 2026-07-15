@@ -22,10 +22,12 @@ release), so **Options ▸ Mods** in‑game shows every installed mod. Drop Mod 
 into the game's `mods/` folder (**📁 Mods folder**) and press **▶ Launch game** — the Mod Loader
 loads every mod at startup.
 
-**Disable** restores the original; **Re‑apply** re‑patches after a Steam update; **⟲ Revert to
-vanilla** (top‑right) is an always‑available button that puts your pristine `vcb.pck.original`
-back so you're one click from the unmodded game. Full player + mod‑author guide:
-**[docs/MODDING.md](docs/MODDING.md)**.
+**Disable** restores the original; **Re‑apply** re‑patches after a Steam update. Full player +
+mod‑author guide: **[docs/MODDING.md](docs/MODDING.md)**.
+
+The top‑right button toggles the launcher's look between **Classic** (the calm dark theme) and
+**Liquid Glass** (luminous, translucent frosted panels over a soft gradient). Your choice is
+remembered between runs.
 
 Beside those controls the launcher shows a **Mod Loader** status: *up to date* or *out of
 date*, checked against the [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader)

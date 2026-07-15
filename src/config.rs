@@ -27,6 +27,10 @@ pub struct Config {
     /// seed / patch logic). Absent on a first-ever run.
     #[serde(default)]
     pub last_launcher_version: Option<String>,
+    /// The UI theme the user chose: "classic" or "glass" (Liquid Glass). Absent means the default
+    /// (classic).
+    #[serde(default)]
+    pub ui_theme: Option<String>,
 }
 
 const FILE_NAME: &str = "launcher_config.json";
@@ -103,5 +107,12 @@ pub fn save_skip_launcher_version(version: Option<String>) {
 pub fn save_last_launcher_version(version: &str) {
     let mut cfg = load();
     cfg.last_launcher_version = Some(version.to_string());
+    save(&cfg);
+}
+
+/// Remember the chosen UI theme ("classic" or "glass").
+pub fn save_ui_theme(theme: &str) {
+    let mut cfg = load();
+    cfg.ui_theme = Some(theme.to_string());
     save(&cfg);
 }
