@@ -632,13 +632,7 @@ impl eframe::App for LauncherApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(BG_CONTENT).inner_margin(egui::Margin::same(20.0)))
-            .show(ctx, |ui| {
-                // The content stacks several cards that can outgrow a short window, so it scrolls
-                // (mouse wheel + touchpad — egui maps both to the same scroll events).
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| self.content_ui(ui));
-            });
+            .show(ctx, |ui| self.content_ui(ui));
 
         // The self-update prompt renders as a centered modal over everything.
         if self.update_open {
@@ -721,12 +715,44 @@ impl LauncherApp {
 
     // ================================ Main content ================================
     fn content_ui(&mut self, ui: &mut egui::Ui) {
+        if self.modding_on {
+            // Modding on: a compact controls card on top, then the mod list master/detail split
+            // fills the rest of the panel — a clickable list on the left, the selected mod's full
+            // details on the right (the same shape the old Legacy tab used, in the launcher style).
+            section_header(ui, "Runtime modding", "Patch once, then load many mods from the game's mods/ folder");
+            ui.add_space(12.0);
+            self.controls_card(ui);
+            ui.add_space(14.0);
+            self.mods_master_detail(ui);
+        } else {
+            // Modding off: onboarding, scrollable in case the window is short.
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let has_game = self.game_dir.is_some();
+                section_header(ui, "Runtime modding", "Patch once, then load many mods from the game's mods/ folder");
+                ui.add_space(12.0);
+                self.controls_card(ui);
+                ui.add_space(16.0);
+                how_it_works(ui);
+                if !has_game {
+                    ui.add_space(14.0);
+                    ui.label(
+                        egui::RichText::new("Set your game folder at the top before enabling modding or launching.")
+                            .size(12.0)
+                            .color(YELLOW),
+                    );
+                }
+            });
+        }
+    }
+
+    /// The top card: modding status, primary actions (launch / enable / disable / re-apply + the
+    /// Mod Loader status), and — on the right — the launcher version + a global "Check for updates".
+    /// A "Restart to apply update" row appears once a launcher update has been downloaded.
+    fn controls_card(&mut self, ui: &mut egui::Ui) {
         let has_game = self.game_dir.is_some();
-
-        section_header(ui, "Runtime modding", "Patch once, then load many mods from the game's mods/ folder");
-        ui.add_space(12.0);
-
-        // Status + controls card.
+        let has_restart = self.pending_restart.is_some();
+        let mut do_check = false;
+        let mut do_restart = false;
         card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -739,12 +765,21 @@ impl LauncherApp {
                     ui.label(egui::RichText::new("Modding is disabled").size(15.0).strong().color(TEXT));
                     ui.label(egui::RichText::new("the game is running its stock vcb.pck").size(12.0).color(DIM));
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(pill_button("Check for updates"))
+                        .on_hover_text("Check GitHub for a newer launcher and newer versions of your installed mods")
+                        .clicked()
+                    {
+                        do_check = true;
+                    }
+                    ui.label(egui::RichText::new(format!("launcher v{}", update::CURRENT)).size(11.0).color(DIM));
+                });
             });
 
             ui.add_space(14.0);
 
             ui.horizontal(|ui| {
-                // Primary action: launch the (patched) game.
                 let launch_hint = if self.modding_on {
                     "Start the game — the Mod Loader loads every .zip in the game's mods/ folder"
                 } else {
@@ -792,101 +827,21 @@ impl LauncherApp {
                     self.enable_modding();
                 }
             });
-        });
 
-        ui.add_space(16.0);
-        self.updates_card(ui);
-
-        if self.modding_on {
-            ui.add_space(16.0);
-            self.game_mods_card(ui);
-        }
-
-        ui.add_space(16.0);
-
-        // How-it-works helper.
-        egui::Frame::none()
-            .fill(PANEL_2)
-            .rounding(egui::Rounding::same(12.0))
-            .stroke(egui::Stroke::new(1.0, CARD_BORDER))
-            .inner_margin(egui::Margin::same(16.0))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new("How it works").size(13.0).strong().color(TEXT));
-                ui.add_space(8.0);
-                for (n, line) in [
-                    "Enable modding — the launcher snapshots your pristine vcb.pck and bakes the Mod Loader into a fresh copy. Your original is never lost.",
-                    "Open the mods folder and drop in Mod Loader packages (.zip). Several mods can live side by side.",
-                    "Launch game — the Mod Loader loads every mod at startup, on the original game engine.",
-                ]
-                .iter()
-                .enumerate()
-                {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("{}.", n + 1)).size(12.0).strong().color(ACCENT));
-                        ui.label(egui::RichText::new(*line).size(12.0).color(DIM));
-                    });
-                    ui.add_space(3.0);
-                }
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("After a Steam update replaces vcb.pck, press Re-apply. Full guide: docs/MODDING.md.")
-                        .size(11.0)
-                        .color(FAINT),
-                );
-            });
-
-        if !has_game {
-            ui.add_space(14.0);
-            ui.label(
-                egui::RichText::new("Set your game folder at the top before enabling modding or launching.")
-                    .size(12.0)
-                    .color(YELLOW),
-            );
-        }
-    }
-
-    /// Small "Updates" card: the launcher version, a manual "Check for updates" button (checks the
-    /// launcher AND the installed mods), and — after a launcher update has downloaded — a
-    /// "Restart to apply" button.
-    fn updates_card(&mut self, ui: &mut egui::Ui) {
-        let has_restart = self.pending_restart.is_some();
-        let mut do_check = false;
-        let mut do_restart = false;
-        egui::Frame::none()
-            .fill(PANEL_2)
-            .rounding(egui::Rounding::same(12.0))
-            .stroke(egui::Stroke::new(1.0, CARD_BORDER))
-            .inner_margin(egui::Margin::same(16.0))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
+            if has_restart {
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Updates").size(13.0).strong().color(TEXT));
-                    ui.label(egui::RichText::new(format!("launcher v{}", update::CURRENT)).size(11.0).color(DIM));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(pill_button("Check for updates"))
-                            .on_hover_text("Check GitHub for a newer launcher and newer versions of your installed mods")
-                            .clicked()
-                        {
-                            do_check = true;
-                        }
-                    });
+                    if ui.add(primary_button("Restart to apply update")).clicked() {
+                        do_restart = true;
+                    }
+                    ui.label(
+                        egui::RichText::new("A launcher update was downloaded — it also applies next time you open the launcher.")
+                            .size(11.0)
+                            .color(DIM),
+                    );
                 });
-                if has_restart {
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        if ui.add(primary_button("Restart to apply update")).clicked() {
-                            do_restart = true;
-                        }
-                        ui.label(
-                            egui::RichText::new("A launcher update was downloaded — it also applies next time you open the launcher.")
-                                .size(11.0)
-                                .color(DIM),
-                        );
-                    });
-                }
-            });
+            }
+        });
         let ctx = ui.ctx().clone();
         if do_check {
             self.check_for_updates(&ctx);
@@ -903,11 +858,12 @@ impl LauncherApp {
         }
     }
 
-    /// "Mods in your game folder": a master/detail view like the in-game Mod Menu — a clickable
-    /// list of installed Mod Loader mods on the left (name, version, update indicator) and the
-    /// selected mod's full details on the right (description, repo, and a single-mod Update button
-    /// beside its version). "Update all" and "Check for updates" sit at the top. Modding-only.
-    fn game_mods_card(&mut self, ui: &mut egui::Ui) {
+    /// "Mods in your game folder": a full-height master/detail view — a clickable list of installed
+    /// mods on the left (name, version, update indicator) and the selected mod's full details on the
+    /// right (description, repo, and a single-mod Update button beside its version). "Update all"
+    /// sits at the top of the box. Fills the panel below the controls card (like the old Legacy
+    /// tab), in the launcher's style. Modding-only.
+    fn mods_master_detail(&mut self, ui: &mut egui::Ui) {
         let mods = self.game_mods.clone();
         let checks = self.mod_checks.lock().unwrap().clone();
         let working = match &*self.mod_update.lock().unwrap() {
@@ -924,103 +880,86 @@ impl LauncherApp {
         }
         let selected = self.selected_mod.clone();
 
-        let mut do_check = false;
         let mut do_rescan = false;
         let mut open_folder = false;
         let mut do_update_all = false;
         let mut new_selection: Option<String> = None;
         let mut do_update: Option<(gamemods::GameMod, gamemods::ModLatest)> = None;
 
-        egui::Frame::none()
-            .fill(PANEL_2)
-            .rounding(egui::Rounding::same(12.0))
-            .stroke(egui::Stroke::new(1.0, CARD_BORDER))
-            .inner_margin(egui::Margin::same(16.0))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Mods in your game folder").size(13.0).strong().color(TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(any_updates, primary_button("Update all"))
-                            .on_hover_text("Update every installed mod that has a newer release")
-                            .clicked()
-                        {
-                            do_update_all = true;
-                        }
-                        if ui.add(pill_button("Check for updates")).on_hover_text("Check GitHub for newer versions of the launcher and every installed mod").clicked() {
-                            do_check = true;
-                        }
-                        if ui.add(pill_button("⟳")).on_hover_text("Rescan the game's mods folder").clicked() {
-                            do_rescan = true;
-                        }
-                        if ui.add(pill_button("📁 Mods folder")).clicked() {
-                            open_folder = true;
-                        }
-                    });
-                });
-                ui.add_space(10.0);
-
-                if mods.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No mods here yet — open the mods folder and drop in Mod Loader .zip mods, then press ⟳.")
-                            .size(12.0)
-                            .color(DIM),
-                    );
-                    return;
+        // Header row: title + Update all (top of the box) + rescan + open folder.
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Mods in your game folder").size(15.0).strong().color(TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(any_updates, primary_button("Update all"))
+                    .on_hover_text("Update every installed mod that has a newer release")
+                    .clicked()
+                {
+                    do_update_all = true;
                 }
+                if ui.add(pill_button("⟳")).on_hover_text("Rescan the game's mods folder").clicked() {
+                    do_rescan = true;
+                }
+                if ui.add(pill_button("📁 Mods folder")).clicked() {
+                    open_folder = true;
+                }
+            });
+        });
+        ui.add_space(8.0);
 
-                // Fixed-height master/detail body (bounded so its inner lists scroll even though the
-                // whole tab is inside an outer scroll area).
-                let body_h = 300.0_f32;
-                let total_w = ui.available_width();
-                let list_w = (total_w * 0.42).clamp(170.0, 300.0);
+        if mods.is_empty() {
+            ui.label(
+                egui::RichText::new("No mods here yet — open the mods folder and drop in Mod Loader .zip mods, then press ⟳.")
+                    .size(12.0)
+                    .color(DIM),
+            );
+        } else {
+            // Two-column split filling the rest of the panel: list left, details right, each
+            // scrolling on its own.
+            ui.horizontal_top(|ui| {
+                let list_w = (ui.available_width() * 0.40).clamp(200.0, 320.0);
                 ui.allocate_ui_with_layout(
-                    egui::vec2(total_w, body_h),
-                    egui::Layout::left_to_right(egui::Align::Min),
+                    egui::vec2(list_w, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        // Left: the mod list.
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(list_w, body_h),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.set_width(list_w);
-                                egui::ScrollArea::vertical()
-                                    .id_source("gm_list")
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        for gm in &mods {
-                                            let is_working = working.as_deref() == Some(gm.id.as_str());
-                                            let is_sel = selected.as_deref() == Some(gm.id.as_str());
-                                            if mod_list_row(ui, gm, checks.get(&gm.id), is_working, is_sel) {
-                                                new_selection = Some(gm.id.clone());
-                                            }
-                                        }
-                                    });
-                            },
-                        );
-                        ui.separator();
-                        // Right: details for the selected mod.
+                        ui.set_width(list_w);
                         egui::ScrollArea::vertical()
-                            .id_source("gm_detail")
+                            .id_source("gm_list")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                if let Some(gm) = mods.iter().find(|m| Some(m.id.as_str()) == selected.as_deref()) {
+                                for gm in &mods {
                                     let is_working = working.as_deref() == Some(gm.id.as_str());
-                                    if let Some(latest) = mod_detail_ui(ui, gm, checks.get(&gm.id), is_working) {
-                                        do_update = Some((gm.clone(), latest));
+                                    let is_sel = selected.as_deref() == Some(gm.id.as_str());
+                                    if mod_list_row(ui, gm, checks.get(&gm.id), is_working, is_sel) {
+                                        new_selection = Some(gm.id.clone());
                                     }
-                                } else {
-                                    ui.add_space(20.0);
-                                    ui.label(egui::RichText::new("Select a mod on the left.").size(13.0).color(DIM));
                                 }
                             });
                     },
                 );
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .id_source("gm_detail")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if let Some(gm) = mods.iter().find(|m| Some(m.id.as_str()) == selected.as_deref()) {
+                                let is_working = working.as_deref() == Some(gm.id.as_str());
+                                if let Some(latest) = mod_detail_ui(ui, gm, checks.get(&gm.id), is_working) {
+                                    do_update = Some((gm.clone(), latest));
+                                }
+                            } else {
+                                ui.add_space(20.0);
+                                ui.label(egui::RichText::new("Select a mod on the left.").size(13.0).color(DIM));
+                            }
+                        });
+                });
             });
+        }
 
-        let ctx = ui.ctx().clone();
         if let Some(id) = new_selection {
             self.selected_mod = Some(id);
         }
@@ -1029,9 +968,6 @@ impl LauncherApp {
         }
         if let Some((gm, latest)) = do_update {
             self.queue_update(gm, latest);
-        }
-        if do_check {
-            self.check_for_updates(&ctx);
         }
         if do_rescan {
             self.refresh_game_mods();
@@ -1365,6 +1301,40 @@ fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.label(egui::RichText::new(title).size(18.0).strong().color(TEXT));
     ui.add_space(2.0);
     ui.label(egui::RichText::new(subtitle).size(12.0).color(DIM));
+}
+
+/// The onboarding "How it works" helper card (shown while modding is disabled).
+fn how_it_works(ui: &mut egui::Ui) {
+    egui::Frame::none()
+        .fill(PANEL_2)
+        .rounding(egui::Rounding::same(12.0))
+        .stroke(egui::Stroke::new(1.0, CARD_BORDER))
+        .inner_margin(egui::Margin::same(16.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new("How it works").size(13.0).strong().color(TEXT));
+            ui.add_space(8.0);
+            for (n, line) in [
+                "Enable modding — the launcher snapshots your pristine vcb.pck and bakes the Mod Loader into a fresh copy. Your original is never lost.",
+                "Open the mods folder and drop in Mod Loader packages (.zip). Several mods can live side by side.",
+                "Launch game — the Mod Loader loads every mod at startup, on the original game engine.",
+            ]
+            .iter()
+            .enumerate()
+            {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{}.", n + 1)).size(12.0).strong().color(ACCENT));
+                    ui.label(egui::RichText::new(*line).size(12.0).color(DIM));
+                });
+                ui.add_space(3.0);
+            }
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("After a Steam update replaces vcb.pck, press Re-apply. Full guide: docs/MODDING.md.")
+                    .size(11.0)
+                    .color(FAINT),
+            );
+        });
 }
 
 /// The app's little logo — a circuit chip with pins and a lit central via — drawn as
