@@ -27,28 +27,136 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-// --- palette --------------------------------------------------------------------------
-// A calm, slightly cool dark theme. Layered background tones give the header/status bars a
-// gentle separation from the content, and a single mint accent carries the primary actions so
-// the eye always knows where "go" is.
-const BG: egui::Color32 = egui::Color32::from_rgb(0x0f, 0x13, 0x18); // app background
-const BG_CONTENT: egui::Color32 = egui::Color32::from_rgb(0x13, 0x17, 0x1d); // content area
-const PANEL: egui::Color32 = egui::Color32::from_rgb(0x19, 0x1f, 0x26); // header / status
-const PANEL_2: egui::Color32 = egui::Color32::from_rgb(0x11, 0x16, 0x1b); // insets
-const CARD: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x26, 0x2f);
-const CARD_HOVER: egui::Color32 = egui::Color32::from_rgb(0x27, 0x30, 0x3a);
-const CARD_SEL: egui::Color32 = egui::Color32::from_rgb(0x15, 0x35, 0x2d); // selected list row (accent-tinted)
-const CARD_BORDER: egui::Color32 = egui::Color32::from_rgb(0x2b, 0x34, 0x3f); // hairline card edge
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3b, 0xd1, 0x9e);
-const ACCENT_DK: egui::Color32 = egui::Color32::from_rgb(0x2b, 0xa5, 0x7c);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(0xe9, 0xed, 0xf1);
-const DIM: egui::Color32 = egui::Color32::from_rgb(0x97, 0xa2, 0xb0);
-const FAINT: egui::Color32 = egui::Color32::from_rgb(0x5c, 0x66, 0x72);
-// The game-folder text field's placeholder — deliberately greyer than real input so it reads as
-// a hint, not as typed text.
-const HINT: egui::Color32 = egui::Color32::from_rgb(0x50, 0x5a, 0x66);
-const RED: egui::Color32 = egui::Color32::from_rgb(0xf0, 0x6a, 0x6a);
-const YELLOW: egui::Color32 = egui::Color32::from_rgb(0xf2, 0xc1, 0x4e);
+// --- palette / theme -------------------------------------------------------------------
+// Two themes the user can flip between (the toggle sits top-right in the header):
+//   • Classic — a calm, slightly cool dark theme. Layered background tones give the header/status
+//     bars a gentle separation from the content, and a single mint accent carries the primary
+//     actions so the eye always knows where "go" is.
+//   • Liquid Glass — luminous, translucent "frosted glass" panels over a soft colour gradient,
+//     with brighter edges and an icy-cyan accent.
+//
+// Every widget reads its colours from the *active* palette via `pal()` (backed by a thread-local,
+// since egui runs single-threaded), so a theme switch is instant and total. `Pal` is a plain Copy
+// struct; the presets are `CLASSIC` (const) and `glass_pal()`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Theme {
+    Classic,
+    Glass,
+}
+
+impl Theme {
+    fn as_str(self) -> &'static str {
+        match self {
+            Theme::Classic => "classic",
+            Theme::Glass => "glass",
+        }
+    }
+    fn from_str(s: &str) -> Theme {
+        match s {
+            "glass" => Theme::Glass,
+            _ => Theme::Classic,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Pal {
+    glass: bool,
+    bg: egui::Color32,         // app background
+    bg_content: egui::Color32, // content area
+    panel: egui::Color32,      // header / status
+    panel_2: egui::Color32,    // insets
+    card: egui::Color32,
+    card_hover: egui::Color32,
+    card_sel: egui::Color32,   // selected list row (accent-tinted)
+    card_border: egui::Color32, // hairline card edge
+    accent: egui::Color32,
+    accent_dk: egui::Color32,
+    text: egui::Color32,
+    dim: egui::Color32,
+    faint: egui::Color32,
+    hint: egui::Color32, // text-field placeholder — greyer than real input
+    red: egui::Color32,
+    yellow: egui::Color32,
+    extreme: egui::Color32, // extreme_bg_color (text-field wells etc.)
+    // Liquid Glass background gradient stops (top → bottom); unused in Classic.
+    grad_top: egui::Color32,
+    grad_bottom: egui::Color32,
+}
+
+const CLASSIC: Pal = Pal {
+    glass: false,
+    bg: egui::Color32::from_rgb(0x0f, 0x13, 0x18),
+    bg_content: egui::Color32::from_rgb(0x13, 0x17, 0x1d),
+    panel: egui::Color32::from_rgb(0x19, 0x1f, 0x26),
+    panel_2: egui::Color32::from_rgb(0x11, 0x16, 0x1b),
+    card: egui::Color32::from_rgb(0x1f, 0x26, 0x2f),
+    card_hover: egui::Color32::from_rgb(0x27, 0x30, 0x3a),
+    card_sel: egui::Color32::from_rgb(0x15, 0x35, 0x2d),
+    card_border: egui::Color32::from_rgb(0x2b, 0x34, 0x3f),
+    accent: egui::Color32::from_rgb(0x3b, 0xd1, 0x9e),
+    accent_dk: egui::Color32::from_rgb(0x2b, 0xa5, 0x7c),
+    text: egui::Color32::from_rgb(0xe9, 0xed, 0xf1),
+    dim: egui::Color32::from_rgb(0x97, 0xa2, 0xb0),
+    faint: egui::Color32::from_rgb(0x5c, 0x66, 0x72),
+    hint: egui::Color32::from_rgb(0x50, 0x5a, 0x66),
+    red: egui::Color32::from_rgb(0xf0, 0x6a, 0x6a),
+    yellow: egui::Color32::from_rgb(0xf2, 0xc1, 0x4e),
+    extreme: egui::Color32::from_rgb(0x0b, 0x0e, 0x12),
+    grad_top: egui::Color32::from_rgb(0x0f, 0x13, 0x18),
+    grad_bottom: egui::Color32::from_rgb(0x0f, 0x13, 0x18),
+};
+
+// Liquid Glass. Translucent fills (alpha < 255) let the background gradient bleed through the
+// panels/cards for the frosted look; borders are a luminous near-white hairline. Built in a
+// function because `Color32::from_rgba_unmultiplied` (straight-alpha → premultiplied) isn't const.
+fn glass_pal() -> Pal {
+    let t = egui::Color32::from_rgba_unmultiplied;
+    Pal {
+        glass: true,
+        bg: egui::Color32::from_rgb(0x0a, 0x0f, 0x1a),
+        bg_content: t(0x12, 0x1d, 0x33, 26),
+        panel: t(0x1b, 0x2a, 0x46, 150),
+        panel_2: t(0x16, 0x24, 0x3d, 130),
+        card: t(0x5c, 0x74, 0xa2, 92),
+        card_hover: t(0x6e, 0x88, 0xb6, 120),
+        card_sel: t(0x40, 0x9c, 0xcf, 120),
+        card_border: t(0xd8, 0xe9, 0xff, 64),
+        accent: egui::Color32::from_rgb(0x63, 0xdd, 0xff),
+        accent_dk: egui::Color32::from_rgb(0x33, 0xa4, 0xd4),
+        text: egui::Color32::from_rgb(0xf3, 0xf8, 0xff),
+        dim: egui::Color32::from_rgb(0xbe, 0xce, 0xe6),
+        faint: egui::Color32::from_rgb(0x83, 0x95, 0xb0),
+        hint: egui::Color32::from_rgb(0x6a, 0x7d, 0x99),
+        red: egui::Color32::from_rgb(0xff, 0x83, 0x93),
+        yellow: egui::Color32::from_rgb(0xff, 0xd7, 0x6f),
+        extreme: t(0x06, 0x0c, 0x18, 170),
+        grad_top: egui::Color32::from_rgb(0x18, 0x24, 0x46),
+        grad_bottom: egui::Color32::from_rgb(0x0b, 0x22, 0x30),
+    }
+}
+
+thread_local! {
+    static PAL: std::cell::Cell<Pal> = const { std::cell::Cell::new(CLASSIC) };
+}
+
+/// The active palette. Every widget reads its colours through this.
+fn pal() -> Pal {
+    PAL.with(|c| c.get())
+}
+
+/// Set the active palette (called each frame + on a theme switch).
+fn set_pal(p: Pal) {
+    PAL.with(|c| c.set(p));
+}
+
+/// The palette preset for a theme.
+fn pal_for(theme: Theme) -> Pal {
+    match theme {
+        Theme::Classic => CLASSIC,
+        Theme::Glass => glass_pal(),
+    }
+}
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -102,13 +210,23 @@ struct LauncherApp {
     update_queue: Vec<(gamemods::GameMod, gamemods::ModLatest)>,
     // Set on the first boot of a freshly-updated launcher, to auto re-apply the patch once.
     boot_reapply: bool,
+    // The active UI theme (Classic / Liquid Glass), toggled from the header and persisted.
+    theme: Theme,
 }
 
 impl LauncherApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let cfg = config::load();
+
+        // Apply the saved UI theme before styling so the first frame is already themed.
+        let theme = cfg
+            .ui_theme
+            .as_deref()
+            .map(Theme::from_str)
+            .unwrap_or(Theme::Classic);
+        set_pal(pal_for(theme));
         setup_style(&cc.egui_ctx);
 
-        let cfg = config::load();
         // Prefer the folder the user set last time; only fall back to auto-detection.
         let remembered = cfg
             .game_dir
@@ -159,6 +277,7 @@ impl LauncherApp {
             selected_mod: None,
             update_queue: Vec::new(),
             boot_reapply: false,
+            theme,
         };
         if let Some(d) = &app.game_dir {
             app.game_dir_input = d.display().to_string();
@@ -457,7 +576,7 @@ impl LauncherApp {
     fn modloader_status_inline(&mut self, ui: &mut egui::Ui) {
         if matches!(*self.ml_update_phase.lock().unwrap(), modloader::UpdatePhase::Working) {
             ui.spinner();
-            ui.label(egui::RichText::new("Updating Mod Loader…").size(12.0).color(DIM));
+            ui.label(egui::RichText::new("Updating Mod Loader…").size(12.0).color(pal().dim));
             return;
         }
         let (latest, check_err) = match &*self.modloader_check.lock().unwrap() {
@@ -472,11 +591,11 @@ impl LauncherApp {
 
         match (latest, applied) {
             (Some(latest), Some(applied)) if update::is_newer(&latest.version, &applied) => {
-                ui.label(egui::RichText::new("⬆").size(13.0).color(YELLOW));
+                ui.label(egui::RichText::new("⬆").size(13.0).color(pal().yellow));
                 ui.label(
                     egui::RichText::new(format!("Mod Loader out of date (v{applied} → v{})", latest.version))
                         .size(12.0)
-                        .color(YELLOW),
+                        .color(pal().yellow),
                 );
                 if ui
                     .add(pill_button("Update"))
@@ -488,19 +607,19 @@ impl LauncherApp {
                 }
             }
             (Some(_), Some(applied)) => {
-                ui.label(egui::RichText::new("●").size(12.0).color(ACCENT));
-                ui.label(egui::RichText::new(format!("Mod Loader up to date (v{applied})")).size(12.0).color(DIM));
+                ui.label(egui::RichText::new("●").size(12.0).color(pal().accent));
+                ui.label(egui::RichText::new(format!("Mod Loader up to date (v{applied})")).size(12.0).color(pal().dim));
             }
             (None, Some(applied)) => {
                 // Couldn't reach GitHub (offline / rate-limited) or still checking — just show
                 // what's installed, with the check error (if any) on hover.
-                let resp = ui.label(egui::RichText::new(format!("Mod Loader v{applied}")).size(12.0).color(FAINT));
+                let resp = ui.label(egui::RichText::new(format!("Mod Loader v{applied}")).size(12.0).color(pal().faint));
                 if let Some(err) = check_err {
                     resp.on_hover_text(format!("Couldn't check for Mod Loader updates: {err}"));
                 }
             }
             _ => {
-                ui.label(egui::RichText::new("Mod Loader").size(12.0).color(FAINT));
+                ui.label(egui::RichText::new("Mod Loader").size(12.0).color(pal().faint));
             }
         }
     }
@@ -558,21 +677,19 @@ impl LauncherApp {
         }
     }
 
-    /// Always-available escape hatch: restore the pristine `vcb.pck.original` (undo any patch or
-    /// foreign mod). Same restore point the Mod Loader patch keeps.
-    fn revert_to_vanilla(&mut self) {
-        let Some(dir) = self.game_dir.clone() else {
-            self.set_err("Set the game folder first.");
-            return;
+    /// Flip between the Classic and Liquid Glass themes; re-style immediately and remember it.
+    fn toggle_theme(&mut self, ctx: &egui::Context) {
+        self.theme = match self.theme {
+            Theme::Classic => Theme::Glass,
+            Theme::Glass => Theme::Classic,
         };
-        match patch::disable_modding(&dir) {
-            Ok(()) => {
-                self.refresh_modding();
-                self.refresh_game_mods();
-                self.set_ok("Restored the vanilla game (vcb.pck.original).");
-            }
-            Err(e) => self.set_err(format!("Couldn't revert: {}", e)),
-        }
+        set_pal(pal_for(self.theme));
+        setup_style(ctx);
+        config::save_ui_theme(self.theme.as_str());
+        self.set_ok(match self.theme {
+            Theme::Glass => "Liquid Glass theme on.",
+            Theme::Classic => "Classic theme on.",
+        });
     }
 
     fn detect_game(&mut self) {
@@ -619,19 +736,32 @@ impl LauncherApp {
 }
 
 impl eframe::App for LauncherApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        pal_for(self.theme).bg.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Keep the active palette in lock-step with the chosen theme every frame (cheap), so all
+        // the colour accessors resolve correctly for this render.
+        set_pal(pal_for(self.theme));
         self.poll_updates(ctx);
 
+        // Liquid Glass: wash a soft gradient behind everything; the translucent panels frost over
+        // it. Painted before the panels are shown so it sits underneath them.
+        if self.theme == Theme::Glass {
+            paint_glass_background(ctx, &pal_for(self.theme));
+        }
+
         egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(20.0, 15.0)))
+            .frame(egui::Frame::none().fill(pal().panel).inner_margin(egui::Margin::symmetric(20.0, 15.0)))
             .show(ctx, |ui| self.header_ui(ui));
 
         egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(20.0, 10.0)))
+            .frame(egui::Frame::none().fill(pal().panel).inner_margin(egui::Margin::symmetric(20.0, 10.0)))
             .show(ctx, |ui| self.status_ui(ui));
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(BG_CONTENT).inner_margin(egui::Margin::same(20.0)))
+            .frame(egui::Frame::none().fill(pal().bg_content).inner_margin(egui::Margin::same(20.0)))
             .show(ctx, |ui| self.content_ui(ui));
 
         // The self-update prompt renders as a centered modal over everything.
@@ -643,44 +773,44 @@ impl eframe::App for LauncherApp {
 
 impl LauncherApp {
     fn header_ui(&mut self, ui: &mut egui::Ui) {
-        let can_revert = self.game_dir.as_ref().map(|d| patch::has_backup(d)).unwrap_or(false);
+        let mut toggle_theme = false;
         ui.horizontal(|ui| {
             let (logo_rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
             paint_logo(ui.painter(), logo_rect);
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("VCB").size(22.0).strong().color(ACCENT));
-            ui.label(egui::RichText::new("Mod Launcher").size(22.0).strong().color(TEXT));
+            ui.label(egui::RichText::new("VCB").size(22.0).strong().color(pal().accent));
+            ui.label(egui::RichText::new("Mod Launcher").size(22.0).strong().color(pal().text));
 
-            // Always-available "go back to the unmodded game" action.
+            // Top-right: switch between the Classic and Liquid Glass looks.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = egui::RichText::new("⟲  Revert to vanilla")
-                    .color(if can_revert { TEXT } else { FAINT });
-                let btn = egui::Button::new(label)
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(1.0, if can_revert { RED } else { FAINT }))
-                    .rounding(egui::Rounding::same(999.0));
-                let hover = if can_revert {
-                    "Restore the original vcb.pck (vcb.pck.original) — undo any patch or mod"
-                } else {
-                    "No vanilla backup yet — it's created the first time you enable modding over a clean install"
+                let (glyph, name, hover) = match self.theme {
+                    Theme::Glass => ("🧊", "Liquid Glass", "Theme: Liquid Glass — click for Classic"),
+                    Theme::Classic => ("◑", "Classic", "Theme: Classic — click for Liquid Glass"),
                 };
-                if ui.add_enabled(can_revert, btn).on_hover_text(hover).clicked() {
-                    self.revert_to_vanilla();
+                let btn = egui::Button::new(egui::RichText::new(format!("{}  {}", glyph, name)).color(pal().text))
+                    .fill(pal().card)
+                    .stroke(egui::Stroke::new(1.0, pal().card_border))
+                    .rounding(egui::Rounding::same(999.0));
+                if ui.add(btn).on_hover_text(hover).clicked() {
+                    toggle_theme = true;
                 }
             });
         });
+        if toggle_theme {
+            self.toggle_theme(ui.ctx());
+        }
 
         ui.add_space(14.0);
 
         // Game folder row.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Game folder").size(12.0).color(DIM));
+            ui.label(egui::RichText::new("Game folder").size(12.0).color(pal().dim));
             let found = self.game_dir.as_ref().map(|d| steam::is_game_dir(d)).unwrap_or(false);
             if found {
-                ui.label(egui::RichText::new("●").size(12.0).color(ACCENT))
+                ui.label(egui::RichText::new("●").size(12.0).color(pal().accent))
                     .on_hover_text("Game folder looks good");
             } else {
-                ui.label(egui::RichText::new("●").size(12.0).color(RED))
+                ui.label(egui::RichText::new("●").size(12.0).color(pal().red))
                     .on_hover_text("No vcb.pck / vcb executable found here yet");
             }
         });
@@ -691,7 +821,7 @@ impl LauncherApp {
                 egui::TextEdit::singleline(&mut self.game_dir_input)
                     // A greyer placeholder so the example path reads as a hint, not as input.
                     .hint_text(
-                        egui::RichText::new("…/steamapps/common/Virtual Circuit Board").color(HINT),
+                        egui::RichText::new("…/steamapps/common/Virtual Circuit Board").color(pal().hint),
                     )
                     .desired_width(avail - 184.0),
             );
@@ -705,11 +835,11 @@ impl LauncherApp {
     }
 
     fn status_ui(&mut self, ui: &mut egui::Ui) {
-        let (dot, color) = if self.status_error { ("⚠", RED) } else { ("●", ACCENT) };
+        let (dot, color) = if self.status_error { ("⚠", pal().red) } else { ("●", pal().accent) };
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(dot).size(12.0).color(color));
             ui.add_space(2.0);
-            ui.label(egui::RichText::new(&self.status).size(12.0).color(if self.status_error { RED } else { DIM }));
+            ui.label(egui::RichText::new(&self.status).size(12.0).color(if self.status_error { pal().red } else { pal().dim }));
         });
     }
 
@@ -738,7 +868,7 @@ impl LauncherApp {
                     ui.label(
                         egui::RichText::new("Set your game folder at the top before enabling modding or launching.")
                             .size(12.0)
-                            .color(YELLOW),
+                            .color(pal().yellow),
                     );
                 }
             });
@@ -757,13 +887,13 @@ impl LauncherApp {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 if self.modding_on {
-                    ui.label(egui::RichText::new("●").color(ACCENT).size(15.0));
-                    ui.label(egui::RichText::new("Modding is enabled").size(15.0).strong().color(TEXT));
-                    ui.label(egui::RichText::new("vcb.pck is patched with the Godot Mod Loader").size(12.0).color(DIM));
+                    ui.label(egui::RichText::new("●").color(pal().accent).size(15.0));
+                    ui.label(egui::RichText::new("Modding is enabled").size(15.0).strong().color(pal().text));
+                    ui.label(egui::RichText::new("vcb.pck is patched with the Godot Mod Loader").size(12.0).color(pal().dim));
                 } else {
-                    ui.label(egui::RichText::new("●").color(FAINT).size(15.0));
-                    ui.label(egui::RichText::new("Modding is disabled").size(15.0).strong().color(TEXT));
-                    ui.label(egui::RichText::new("the game is running its stock vcb.pck").size(12.0).color(DIM));
+                    ui.label(egui::RichText::new("●").color(pal().faint).size(15.0));
+                    ui.label(egui::RichText::new("Modding is disabled").size(15.0).strong().color(pal().text));
+                    ui.label(egui::RichText::new("the game is running its stock vcb.pck").size(12.0).color(pal().dim));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -773,7 +903,7 @@ impl LauncherApp {
                     {
                         do_check = true;
                     }
-                    ui.label(egui::RichText::new(format!("launcher v{}", update::CURRENT)).size(11.0).color(DIM));
+                    ui.label(egui::RichText::new(format!("launcher v{}", update::CURRENT)).size(11.0).color(pal().dim));
                 });
             });
 
@@ -837,7 +967,7 @@ impl LauncherApp {
                     ui.label(
                         egui::RichText::new("A launcher update was downloaded — it also applies next time you open the launcher.")
                             .size(11.0)
-                            .color(DIM),
+                            .color(pal().dim),
                     );
                 });
             }
@@ -888,7 +1018,7 @@ impl LauncherApp {
 
         // Header row: title + Update all (top of the box) + rescan + open folder.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Mods in your game folder").size(15.0).strong().color(TEXT));
+            ui.label(egui::RichText::new("Mods in your game folder").size(15.0).strong().color(pal().text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(any_updates, primary_button("Update all"))
@@ -911,7 +1041,7 @@ impl LauncherApp {
             ui.label(
                 egui::RichText::new("No mods here yet — open the mods folder and drop in Mod Loader .zip mods, then press ⟳.")
                     .size(12.0)
-                    .color(DIM),
+                    .color(pal().dim),
             );
         } else {
             // Two-column split filling the rest of the panel: list left, details right, each
@@ -953,7 +1083,7 @@ impl LauncherApp {
                                 }
                             } else {
                                 ui.add_space(20.0);
-                                ui.label(egui::RichText::new("Select a mod on the left.").size(13.0).color(DIM));
+                                ui.label(egui::RichText::new("Select a mod on the left.").size(13.0).color(pal().dim));
                             }
                         });
                 });
@@ -1007,9 +1137,9 @@ impl LauncherApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
               egui::Frame::none()
-                    .fill(PANEL)
+                    .fill(pal().panel)
                     .rounding(egui::Rounding::same(14.0))
-                    .stroke(egui::Stroke::new(1.0, CARD_BORDER))
+                    .stroke(egui::Stroke::new(1.0, pal().card_border))
                     .inner_margin(egui::Margin::same(22.0))
                     .shadow(egui::epaint::Shadow {
                         offset: egui::vec2(0.0, 6.0),
@@ -1020,9 +1150,9 @@ impl LauncherApp {
               .show(ui, |ui| {
                 ui.set_max_width(460.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("⬆").size(20.0).color(ACCENT));
+                    ui.label(egui::RichText::new("⬆").size(20.0).color(pal().accent));
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("Launcher update available").size(17.0).strong().color(TEXT));
+                    ui.label(egui::RichText::new("Launcher update available").size(17.0).strong().color(pal().text));
                 });
                 ui.add_space(10.0);
                 ui.label(
@@ -1031,14 +1161,14 @@ impl LauncherApp {
                         info.current, info.latest
                     ))
                     .size(13.0)
-                    .color(DIM),
+                    .color(pal().dim),
                 );
                 ui.add_space(6.0);
                 if downloaded {
                     ui.label(
                         egui::RichText::new("Downloaded and swapped in. Restart to apply it now — or it applies next time you open the launcher.")
                             .size(12.0)
-                            .color(ACCENT),
+                            .color(pal().accent),
                     );
                 } else if has_asset {
                     ui.label(
@@ -1048,13 +1178,13 @@ impl LauncherApp {
                             "Update now downloads the new build and swaps it in; then restart the launcher to apply it."
                         })
                         .size(12.0)
-                        .color(FAINT),
+                        .color(pal().faint),
                     );
                 } else {
                     ui.label(
                         egui::RichText::new("No prebuilt download was found for this platform — open the releases page to grab it.")
                             .size(12.0)
-                            .color(YELLOW),
+                            .color(pal().yellow),
                     );
                 }
 
@@ -1062,13 +1192,13 @@ impl LauncherApp {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(egui::RichText::new("Downloading…").size(12.0).color(DIM));
+                        ui.label(egui::RichText::new("Downloading…").size(12.0).color(pal().dim));
                     });
                 } else if let Some(err) = &self.update_error {
                     ui.add_space(10.0);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("⚠").size(12.0).color(RED));
-                        ui.label(egui::RichText::new(err).size(12.0).color(RED));
+                        ui.label(egui::RichText::new("⚠").size(12.0).color(pal().red));
+                        ui.label(egui::RichText::new(err).size(12.0).color(pal().red));
                     });
                 }
 
@@ -1090,7 +1220,7 @@ impl LauncherApp {
                 } else {
                     ui.horizontal(|ui| {
                         ui.add_enabled(!working, egui::Checkbox::without_text(&mut self.dont_show_update_again));
-                        ui.label(egui::RichText::new("Don't show again until the next version").size(12.0).color(DIM));
+                        ui.label(egui::RichText::new("Don't show again until the next version").size(12.0).color(pal().dim));
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if has_asset {
@@ -1123,11 +1253,11 @@ fn mod_list_row(
     is_working: bool,
     selected: bool,
 ) -> bool {
-    let fill = if selected { CARD_SEL } else { CARD };
+    let fill = if selected { pal().card_sel } else { pal().card };
     let stroke = if selected {
-        egui::Stroke::new(1.0, ACCENT)
+        egui::Stroke::new(1.0, pal().accent)
     } else {
-        egui::Stroke::new(1.0, CARD_BORDER)
+        egui::Stroke::new(1.0, pal().card_border)
     };
     let mut resp = egui::Frame::none()
         .fill(fill)
@@ -1138,24 +1268,24 @@ fn mod_list_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(gm.display_name()).size(13.5).strong().color(TEXT));
+                ui.label(egui::RichText::new(gm.display_name()).size(13.5).strong().color(pal().text));
                 ui.horizontal(|ui| {
                     let ver = if gm.version.is_empty() { "—".to_string() } else { format!("v{}", gm.version) };
-                    ui.label(egui::RichText::new(ver).size(11.0).color(DIM));
+                    ui.label(egui::RichText::new(ver).size(11.0).color(pal().dim));
                     if is_working {
-                        ui.label(egui::RichText::new("· updating…").size(11.0).color(DIM));
+                        ui.label(egui::RichText::new("· updating…").size(11.0).color(pal().dim));
                     } else {
                         match check {
                             Some(gamemods::ModCheck::Available(l)) => {
-                                ui.label(egui::RichText::new(format!("⬆ v{}", l.version)).size(11.0).color(YELLOW))
+                                ui.label(egui::RichText::new(format!("⬆ v{}", l.version)).size(11.0).color(pal().yellow))
                                     .on_hover_text("Update available");
                             }
                             Some(gamemods::ModCheck::UpToDate) => {
-                                ui.label(egui::RichText::new("●").size(10.0).color(ACCENT))
+                                ui.label(egui::RichText::new("●").size(10.0).color(pal().accent))
                                     .on_hover_text("Up to date");
                             }
                             Some(gamemods::ModCheck::Checking) => {
-                                ui.label(egui::RichText::new("· checking…").size(11.0).color(FAINT));
+                                ui.label(egui::RichText::new("· checking…").size(11.0).color(pal().faint));
                             }
                             _ => {}
                         }
@@ -1187,16 +1317,16 @@ fn mod_detail_ui(
 ) -> Option<gamemods::ModLatest> {
     let mut clicked_latest: Option<gamemods::ModLatest> = None;
 
-    ui.label(egui::RichText::new(gm.display_name()).size(20.0).strong().color(TEXT));
+    ui.label(egui::RichText::new(gm.display_name()).size(20.0).strong().color(pal().text));
     ui.add_space(4.0);
 
     // Version + update status / action, side by side (the "Update" button sits by the version).
     ui.horizontal(|ui| {
         let ver = if gm.version.is_empty() { "no version".to_string() } else { format!("v{}", gm.version) };
-        ui.label(egui::RichText::new(ver).size(13.0).color(DIM));
+        ui.label(egui::RichText::new(ver).size(13.0).color(pal().dim));
         if is_working {
             ui.spinner();
-            ui.label(egui::RichText::new("Updating…").size(12.0).color(DIM));
+            ui.label(egui::RichText::new("Updating…").size(12.0).color(pal().dim));
         } else {
             match check {
                 Some(gamemods::ModCheck::Available(l)) => {
@@ -1207,25 +1337,25 @@ fn mod_detail_ui(
                     {
                         clicked_latest = Some(l.clone());
                     }
-                    ui.label(egui::RichText::new(format!("⬆ v{} available", l.version)).size(12.0).color(YELLOW));
+                    ui.label(egui::RichText::new(format!("⬆ v{} available", l.version)).size(12.0).color(pal().yellow));
                 }
                 Some(gamemods::ModCheck::UpToDate) => {
-                    ui.label(egui::RichText::new("●").size(12.0).color(ACCENT));
-                    ui.label(egui::RichText::new("up to date").size(12.0).color(DIM));
+                    ui.label(egui::RichText::new("●").size(12.0).color(pal().accent));
+                    ui.label(egui::RichText::new("up to date").size(12.0).color(pal().dim));
                 }
                 Some(gamemods::ModCheck::Checking) => {
                     ui.spinner();
-                    ui.label(egui::RichText::new("checking…").size(12.0).color(FAINT));
+                    ui.label(egui::RichText::new("checking…").size(12.0).color(pal().faint));
                 }
                 Some(gamemods::ModCheck::NoRepo) => {
-                    ui.label(egui::RichText::new("no update source").size(12.0).color(FAINT))
+                    ui.label(egui::RichText::new("no update source").size(12.0).color(pal().faint))
                         .on_hover_text("This mod's manifest has no GitHub website_url, so the launcher can't check for updates");
                 }
                 Some(gamemods::ModCheck::Error(e)) => {
-                    ui.label(egui::RichText::new("check failed").size(12.0).color(FAINT)).on_hover_text(e.clone());
+                    ui.label(egui::RichText::new("check failed").size(12.0).color(pal().faint)).on_hover_text(e.clone());
                 }
                 None => {
-                    ui.label(egui::RichText::new("not checked").size(12.0).color(FAINT));
+                    ui.label(egui::RichText::new("not checked").size(12.0).color(pal().faint));
                 }
             }
         }
@@ -1237,18 +1367,18 @@ fn mod_detail_ui(
             Some((o, r)) => format!("{o}/{r}"),
             None => gm.website.clone(),
         };
-        ui.hyperlink_to(egui::RichText::new(label).size(12.0).color(ACCENT), &gm.website);
+        ui.hyperlink_to(egui::RichText::new(label).size(12.0).color(pal().accent), &gm.website);
     }
-    ui.label(egui::RichText::new(format!("id: {}", gm.id)).size(11.0).color(FAINT));
+    ui.label(egui::RichText::new(format!("id: {}", gm.id)).size(11.0).color(pal().faint));
 
     ui.add_space(10.0);
     ui.separator();
     ui.add_space(10.0);
 
     if gm.description.trim().is_empty() {
-        ui.label(egui::RichText::new("This mod's manifest has no description.").size(12.0).color(DIM));
+        ui.label(egui::RichText::new("This mod's manifest has no description.").size(12.0).color(pal().dim));
     } else {
-        ui.label(egui::RichText::new(&gm.description).size(13.0).color(TEXT));
+        ui.label(egui::RichText::new(&gm.description).size(13.0).color(pal().text));
     }
 
     clicked_latest
@@ -1257,62 +1387,62 @@ fn mod_detail_ui(
 /// A framed content card (rounded, hairline-bordered).
 fn card_frame() -> egui::Frame {
     egui::Frame::none()
-        .fill(CARD)
+        .fill(pal().card)
         .rounding(egui::Rounding::same(12.0))
-        .stroke(egui::Stroke::new(1.0, CARD_BORDER))
+        .stroke(egui::Stroke::new(1.0, pal().card_border))
         .inner_margin(egui::Margin::same(16.0))
 }
 
 /// Accent-filled primary button.
 fn primary_button(text: &str) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(text).color(egui::Color32::BLACK).strong())
-        .fill(ACCENT)
-        .stroke(egui::Stroke::new(1.0, ACCENT_DK))
+        .fill(pal().accent)
+        .stroke(egui::Stroke::new(1.0, pal().accent_dk))
         .rounding(egui::Rounding::same(10.0))
 }
 
 /// Neutral outlined secondary button.
 fn ghost_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text).color(TEXT))
-        .fill(CARD)
-        .stroke(egui::Stroke::new(1.0, CARD_BORDER))
+    egui::Button::new(egui::RichText::new(text).color(pal().text))
+        .fill(pal().card)
+        .stroke(egui::Stroke::new(1.0, pal().card_border))
         .rounding(egui::Rounding::same(10.0))
 }
 
 /// A fully-rounded "pill" button — the round, vanilla-like style used for the mod actions
 /// (mirrors the in-game Mod Menu's rounded buttons).
 fn pill_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text).color(TEXT))
-        .fill(CARD)
-        .stroke(egui::Stroke::new(1.0, CARD_BORDER))
+    egui::Button::new(egui::RichText::new(text).color(pal().text))
+        .fill(pal().card)
+        .stroke(egui::Stroke::new(1.0, pal().card_border))
         .rounding(egui::Rounding::same(999.0))
 }
 
 /// Outlined danger button.
 fn danger_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text).color(RED))
+    egui::Button::new(egui::RichText::new(text).color(pal().red))
         .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, RED))
+        .stroke(egui::Stroke::new(1.0, pal().red))
         .rounding(egui::Rounding::same(10.0))
 }
 
 /// A section title + one-line description.
 fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.label(egui::RichText::new(title).size(18.0).strong().color(TEXT));
+    ui.label(egui::RichText::new(title).size(18.0).strong().color(pal().text));
     ui.add_space(2.0);
-    ui.label(egui::RichText::new(subtitle).size(12.0).color(DIM));
+    ui.label(egui::RichText::new(subtitle).size(12.0).color(pal().dim));
 }
 
 /// The onboarding "How it works" helper card (shown while modding is disabled).
 fn how_it_works(ui: &mut egui::Ui) {
     egui::Frame::none()
-        .fill(PANEL_2)
+        .fill(pal().panel_2)
         .rounding(egui::Rounding::same(12.0))
-        .stroke(egui::Stroke::new(1.0, CARD_BORDER))
+        .stroke(egui::Stroke::new(1.0, pal().card_border))
         .inner_margin(egui::Margin::same(16.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new("How it works").size(13.0).strong().color(TEXT));
+            ui.label(egui::RichText::new("How it works").size(13.0).strong().color(pal().text));
             ui.add_space(8.0);
             for (n, line) in [
                 "Enable modding — the launcher snapshots your pristine vcb.pck and bakes the Mod Loader into a fresh copy. Your original is never lost.",
@@ -1323,8 +1453,8 @@ fn how_it_works(ui: &mut egui::Ui) {
             .enumerate()
             {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{}.", n + 1)).size(12.0).strong().color(ACCENT));
-                    ui.label(egui::RichText::new(*line).size(12.0).color(DIM));
+                    ui.label(egui::RichText::new(format!("{}.", n + 1)).size(12.0).strong().color(pal().accent));
+                    ui.label(egui::RichText::new(*line).size(12.0).color(pal().dim));
                 });
                 ui.add_space(3.0);
             }
@@ -1332,7 +1462,7 @@ fn how_it_works(ui: &mut egui::Ui) {
             ui.label(
                 egui::RichText::new("After a Steam update replaces vcb.pck, press Re-apply. Full guide: docs/MODDING.md.")
                     .size(11.0)
-                    .color(FAINT),
+                    .color(pal().faint),
             );
         });
 }
@@ -1344,7 +1474,7 @@ fn paint_logo(p: &egui::Painter, rect: egui::Rect) {
     let s = rect.width();
     let body = egui::Rect::from_center_size(c, rect.size() * 0.72);
     let rounding = egui::Rounding::same(4.0);
-    let pin = egui::Stroke::new(1.6, ACCENT.linear_multiply(0.75));
+    let pin = egui::Stroke::new(1.6, pal().accent.linear_multiply(0.75));
 
     // Chip pins (three per side), behind the body.
     for k in [-1.0_f32, 0.0, 1.0] {
@@ -1356,45 +1486,86 @@ fn paint_logo(p: &egui::Painter, rect: egui::Rect) {
     }
 
     // Chip body.
-    p.rect_filled(body, rounding, CARD);
-    p.rect_stroke(body, rounding, egui::Stroke::new(1.8, ACCENT));
+    p.rect_filled(body, rounding, pal().card);
+    p.rect_stroke(body, rounding, egui::Stroke::new(1.8, pal().accent));
 
     // Traces out of the via.
-    let tr = egui::Stroke::new(1.6, ACCENT);
+    let tr = egui::Stroke::new(1.6, pal().accent);
     p.line_segment([c, egui::pos2(body.right() - 2.0, c.y)], tr);
     p.line_segment([c, egui::pos2(c.x, body.bottom() - 2.0)], tr);
 
     // Lit via.
-    p.circle_filled(c, 3.0, ACCENT);
-    p.circle_filled(c, 1.2, BG);
+    p.circle_filled(c, 3.0, pal().accent);
+    p.circle_filled(c, 1.2, pal().bg);
 }
 
 // --- style / os ------------------------------------------------------------------------
 
 fn setup_style(ctx: &egui::Context) {
+    let p = pal();
+    // Glass rounds a touch more and floats widgets on soft shadows for the frosted look.
+    let round = if p.glass { 12.0 } else { 10.0 };
     let mut visuals = egui::Visuals::dark();
     visuals.dark_mode = true;
-    visuals.override_text_color = Some(TEXT);
-    visuals.panel_fill = BG;
-    visuals.window_fill = PANEL;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0x0b, 0x0e, 0x12);
-    visuals.faint_bg_color = CARD;
-    visuals.hyperlink_color = ACCENT;
-    visuals.selection.bg_fill = ACCENT.linear_multiply(0.35);
-    visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
-    visuals.widgets.inactive.rounding = egui::Rounding::same(10.0);
-    visuals.widgets.hovered.rounding = egui::Rounding::same(10.0);
-    visuals.widgets.active.rounding = egui::Rounding::same(10.0);
-    visuals.widgets.inactive.bg_fill = CARD;
-    visuals.widgets.hovered.bg_fill = CARD_HOVER;
-    visuals.widgets.hovered.weak_bg_fill = CARD_HOVER;
-    visuals.widgets.inactive.weak_bg_fill = CARD;
+    visuals.override_text_color = Some(p.text);
+    visuals.panel_fill = p.bg;
+    visuals.window_fill = p.panel;
+    visuals.extreme_bg_color = p.extreme;
+    visuals.faint_bg_color = p.card;
+    visuals.hyperlink_color = p.accent;
+    visuals.selection.bg_fill = p.accent.linear_multiply(0.35);
+    visuals.selection.stroke = egui::Stroke::new(1.0, p.accent);
+    visuals.widgets.inactive.rounding = egui::Rounding::same(round);
+    visuals.widgets.hovered.rounding = egui::Rounding::same(round);
+    visuals.widgets.active.rounding = egui::Rounding::same(round);
+    visuals.widgets.inactive.bg_fill = p.card;
+    visuals.widgets.hovered.bg_fill = p.card_hover;
+    visuals.widgets.hovered.weak_bg_fill = p.card_hover;
+    visuals.widgets.inactive.weak_bg_fill = p.card;
+    if p.glass {
+        // Luminous hairline edges + a subtle drop shadow so panels read as floating glass.
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, p.card_border);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, p.accent.linear_multiply(0.6));
+        visuals.window_stroke = egui::Stroke::new(1.0, p.card_border);
+        visuals.popup_shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 8.0),
+            blur: 28.0,
+            spread: 0.0,
+            color: egui::Color32::from_black_alpha(140),
+        };
+    }
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.button_padding = egui::vec2(14.0, 8.0);
     ctx.set_style(style);
+}
+
+/// Paint the Liquid Glass background gradient behind everything (a soft vertical wash that the
+/// translucent panels frost over). Drawn into the background layer before the panels are shown.
+fn paint_glass_background(ctx: &egui::Context, p: &Pal) {
+    let rect = ctx.screen_rect();
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let steps = 48;
+    let h = rect.height() / steps as f32;
+    for i in 0..steps {
+        let t = i as f32 / (steps as f32 - 1.0);
+        let color = lerp_color(p.grad_top, p.grad_bottom, t);
+        let y = rect.top() + i as f32 * h;
+        // +1px overlap so no seams show between bands.
+        let band = egui::Rect::from_min_size(egui::pos2(rect.left(), y), egui::vec2(rect.width(), h + 1.0));
+        painter.rect_filled(band, egui::Rounding::ZERO, color);
+    }
+    // A gentle luminous glow in the upper-left, like light catching glass.
+    let glow = egui::Color32::from_rgba_unmultiplied(0x6c, 0xd8, 0xff, 22);
+    painter.circle_filled(rect.left_top() + egui::vec2(rect.width() * 0.22, 0.0), rect.width() * 0.5, glow);
+}
+
+/// Linear blend between two opaque colours.
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
 /// Open a folder in the OS file manager.

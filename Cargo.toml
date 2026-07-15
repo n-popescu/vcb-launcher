@@ -1,6 +1,6 @@
 [package]
 name = "vcb-launcher"
-version = "1.4.1"
+version = "1.5.0"
 edition = "2021"
 description = "A small, portable GUI mod launcher for Virtual Circuit Board: patch vcb.pck once with the Godot Mod Loader, then load mods from the game's mods/ folder."
 license = "MIT"
