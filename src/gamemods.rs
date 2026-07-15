@@ -6,9 +6,8 @@
 //! GitHub repo from the manifest's `website_url`, checks that repo's latest release, and can
 //! download the release's `.zip` asset to update the mod in place.
 //!
-//! This is the game's own mods folder — distinct from the launcher's `mods/` (the legacy `.pck`
-//! swap mods, see `scan.rs`). The in-game Mod Menu (`npopescu-ModMenu.zip`) shows up here too and
-//! is updated through the same path.
+//! This is the game's own `mods/` folder, next to the game executable. The in-game Mod Menu
+//! (`npopescu-ModMenu.zip`) shows up here too and is updated through the same path.
 
 use crate::net;
 use crate::update;

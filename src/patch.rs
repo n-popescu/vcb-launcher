@@ -48,6 +48,17 @@ pub fn mods_dir(game_dir: &Path) -> PathBuf {
     game_dir.join("mods")
 }
 
+/// Whether a pristine `vcb.pck.original` backup exists next to the game.
+pub fn has_backup(game_dir: &Path) -> bool {
+    backup_path(game_dir).is_file()
+}
+
+/// A `.pck` "looks vanilla" if it carries no embedded `res://mod.json` (mods ship one). Used to
+/// refuse enabling modding over an unknown mod when there's no clean backup to fall back on.
+pub fn is_vanilla_pck(pck_file: &Path) -> bool {
+    !matches!(pck::extract_file(pck_file, "res://mod.json"), Ok(Some(_)))
+}
+
 /// Is this pck already Mod-Loader-patched?
 pub fn is_patched(pck_file: &Path) -> bool {
     matches!(pck::extract_file(pck_file, MARKER), Ok(Some(_)))

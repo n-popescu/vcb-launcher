@@ -1,6 +1,13 @@
-//! Tiny persisted launcher settings (currently just the chosen game folder), stored as
-//! `launcher_config.json` next to the launcher executable — same portable, next-to-the-exe
-//! convention the `mods/` folder uses.
+//! Tiny persisted launcher settings (the chosen game folder, plus the "skip this launcher
+//! version" choice).
+//!
+//! The file lives in the OS's **per-user config directory** — `%APPDATA%\vcb-launcher\` on
+//! Windows, `~/Library/Application Support/vcb-launcher/` on macOS, `~/.config/vcb-launcher/`
+//! on Linux (XDG). That location **survives an app update**: on macOS especially, replacing
+//! the `.app` bundle wipes anything stored next to the binary, which is where older builds kept
+//! this file — so a settings-next-to-the-exe file would be lost on every update. To keep the
+//! upgrade seamless, [`load`] transparently **migrates** a legacy `launcher_config.json` found
+//! next to the executable into the new location the first time it runs.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -10,10 +17,6 @@ pub struct Config {
     /// The game folder the user last used, so we don't have to re-detect it every launch.
     #[serde(default)]
     pub game_dir: Option<String>,
-    /// Set once the user ticks "Don't show again" on the legacy-mode warning, so we stop
-    /// popping it every time they open the Legacy tab.
-    #[serde(default)]
-    pub hide_legacy_warning: bool,
     /// The launcher version the user chose to skip ("Don't show again until the next
     /// version") in the update prompt. The prompt reappears only once a *newer* version than
     /// this shows up; an empty/absent value means "never skipped".
@@ -21,23 +24,57 @@ pub struct Config {
     pub skip_launcher_version: Option<String>,
 }
 
-/// `launcher_config.json` next to the launcher executable.
+const FILE_NAME: &str = "launcher_config.json";
+
+/// The per-user config directory for the launcher (created on demand when saving):
+/// `<OS config dir>/vcb-launcher`. Falls back to the executable's directory only if the OS
+/// doesn't report a config dir (very rare).
+fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .map(|d| d.join("vcb-launcher"))
+        .unwrap_or_else(exe_dir)
+}
+
+/// The active config file, in the persistent per-user location.
 fn config_path() -> PathBuf {
-    let base = std::env::current_exe()
+    config_dir().join(FILE_NAME)
+}
+
+/// The directory the launcher executable sits in (used only for the legacy migration path).
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("launcher_config.json")
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The old, next-to-the-executable config file that pre-persistent-location builds wrote.
+/// Read once for migration so upgrading users keep their saved game folder.
+fn legacy_config_path() -> PathBuf {
+    exe_dir().join(FILE_NAME)
+}
+
+fn read_from(path: &Path) -> Option<Config> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 pub fn load() -> Config {
-    std::fs::read(config_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    // Prefer the persistent location. If it isn't there yet, migrate a legacy next-to-the-exe
+    // file (if any) into it, so the switch to a persistent location is invisible to the user.
+    if let Some(cfg) = read_from(&config_path()) {
+        return cfg;
+    }
+    if let Some(cfg) = read_from(&legacy_config_path()) {
+        save(&cfg); // copy it into the persistent location for next time
+        return cfg;
+    }
+    Config::default()
 }
 
 pub fn save(cfg: &Config) {
+    let _ = std::fs::create_dir_all(config_dir());
     if let Ok(txt) = serde_json::to_string_pretty(cfg) {
         let _ = std::fs::write(config_path(), txt);
     }
@@ -47,13 +84,6 @@ pub fn save(cfg: &Config) {
 pub fn save_game_dir(dir: &Path) {
     let mut cfg = load();
     cfg.game_dir = Some(dir.display().to_string());
-    save(&cfg);
-}
-
-/// Remember that the user dismissed the legacy-mode warning for good.
-pub fn save_hide_legacy_warning(hide: bool) {
-    let mut cfg = load();
-    cfg.hide_legacy_warning = hide;
     save(&cfg);
 }
 

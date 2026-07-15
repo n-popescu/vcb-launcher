@@ -2,48 +2,59 @@
 
 A small, **portable GUI mod launcher** for [Virtual Circuit Board](https://store.steampowered.com/app/367020/).
 
-It supports two modding models, each on its own tab:
+It patches your `vcb.pck` **once** with the
+[Godot Mod Loader](https://godotengine.org/asset-library/asset/1938) so the game can load many
+mods at runtime from a `mods/` folder — the original game files are never replaced. A **▶ Launch
+game** button starts the (patched) game with every mod loaded. See
+**[docs/MODDING.md](docs/MODDING.md)** and **[docs/PATCHER_DESIGN.md](docs/PATCHER_DESIGN.md)**.
 
-- **Runtime modding (recommended).** Patch your `vcb.pck` **once** with the
-  [Godot Mod Loader](https://godotengine.org/asset-library/asset/1938) so the game can load
-  many mods at runtime from a `mods/` folder — the original game files are never replaced.
-  A **▶ Launch game** button starts the (patched) game with every mod loaded. See
-  **[docs/MODDING.md](docs/MODDING.md)** and **[docs/PATCHER_DESIGN.md](docs/PATCHER_DESIGN.md)**.
-- **Legacy — whole‑pck swap.** Swap a mod's `vcb.pck` into your install (one mod at a time),
-  keeping a one‑time backup of your original so you can always go back. Lives under the
-  **Legacy** tab; opening it once shows a short heads‑up that it's the older, best‑effort
-  path (dismissible with *Don't show again*).
-
-Single self-contained executable — no installer, no runtime, no Python. Windows + Linux.
+Single self-contained executable — no installer, no runtime, no Python. Windows + Linux + macOS.
 
 <!-- A screenshot can go here once the UI is built for your platform. -->
 
 ## Runtime modding (patch + Mod Loader)
 
-On the **Runtime modding** tab, click **Enable modding** and the launcher snapshots your
-pristine `vcb.pck` to `vcb.pck.original`, then writes a patched `vcb.pck` with the Godot
-Mod Loader baked in (original game files copied verbatim — no decryption key needed). It
-also installs a small **mod list** mod (fetched from the
-[`vcb-modmenu`](https://github.com/n-popescu/vcb-modmenu) repo's latest release), so
-**Options ▸ Mods** in‑game shows every installed mod. Drop Mod Loader mods (`.zip`) into the
-game's `mods/` folder (**📁 Mods folder**) and press **▶ Launch game** — the Mod Loader loads
-every mod at startup.
-**Disable** restores the original; **Re‑apply** re‑patches after a Steam update. Full
-player + mod‑author guide: **[docs/MODDING.md](docs/MODDING.md)**.
+Click **Enable modding** and the launcher snapshots your pristine `vcb.pck` to
+`vcb.pck.original`, then writes a patched `vcb.pck` with the Godot Mod Loader baked in (original
+game files copied verbatim — no decryption key needed). It also installs a small **mod list**
+mod (fetched from the [`vcb-modmenu`](https://github.com/n-popescu/vcb-modmenu) repo's latest
+release), so **Options ▸ Mods** in‑game shows every installed mod. Drop Mod Loader mods (`.zip`)
+into the game's `mods/` folder (**📁 Mods folder**) and press **▶ Launch game** — the Mod Loader
+loads every mod at startup.
+
+**Disable** restores the original; **Re‑apply** re‑patches after a Steam update; **⟲ Revert to
+vanilla** (top‑right) is an always‑available button that puts your pristine `vcb.pck.original`
+back so you're one click from the unmodded game. Full player + mod‑author guide:
+**[docs/MODDING.md](docs/MODDING.md)**.
 
 Beside those controls the launcher shows a **Mod Loader** status: *up to date* or *out of
 date*, checked against the [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader)
 releases on startup. The launcher ships with a built‑in Mod Loader as an offline seed, but it
 isn't stuck on that version — when a newer release exists an **Update** button appears that
-downloads it into a `modloader/` folder next to the launcher and re‑applies the patch, so
-`vcb.pck` is always baked with the newest Mod Loader without waiting for a launcher update.
+downloads it into a `modloader/` cache and re‑applies the patch, so `vcb.pck` is always baked
+with the newest Mod Loader without waiting for a launcher update.
+
+### The game folder
+
+On first run the launcher **auto‑detects** your Steam copy of the game (it scans every Steam
+library folder for the one holding `vcb.pck` / the `vcb` executable). You can also paste the
+folder path up top and press **Use**, or press **Auto‑detect**. The folder you set is
+remembered for next time (see [Settings](#settings)).
+
+> The launcher always runs the **original game executable** (the one with the correct,
+> closed‑source simulation engine) — it only changes which `vcb.pck` sits next to it.
+
+> The first time you enable modding over a **clean** install, the launcher snapshots your
+> original `vcb.pck` to `vcb.pck.original`. If your `vcb.pck` was *already* a mod, there's no
+> clean original to back up — use Steam's *Verify integrity of game files* to get one, then
+> enable modding.
 
 ### Updates & installed mods
 
-Under the controls, an **Updates** card shows the launcher version and a **Check for updates**
-button. It checks GitHub for a newer launcher *and* for newer versions of every mod in your
-game folder in one click. When a launcher update is available it downloads the new build, swaps
-it in, and offers **Restart now** (the update also applies the next time you open the launcher).
+An **Updates** card shows the launcher version and a **Check for updates** button. It checks
+GitHub for a newer launcher *and* for newer versions of every mod in your game folder in one
+click. When a launcher update is available it downloads the new build, swaps it in, and offers
+**Restart now** (the update also applies the next time you open the launcher).
 
 The **Mods in your game folder** list shows every Mod Loader mod (`.zip`) next to the game —
 including the in‑game Mod Menu — with its version and a link to its GitHub repo. Each mod is
@@ -51,87 +62,21 @@ checked against its repo's latest release (from the manifest's `website_url`); w
 version exists, an **Update** button downloads it and replaces the mod in place. Mods whose
 manifest has no GitHub `website_url` are listed but can't be auto‑updated.
 
-## Legacy — whole‑pck swap
+## Settings
 
-Everything below lives under the **Legacy** tab. It's the launcher's original model; a
-one‑time notice explains that it's now best‑effort and points you at runtime modding for
-anything that supports it.
+The launcher stores its tiny settings file (`launcher_config.json` — the chosen game folder and
+your skipped‑update version) in the OS's **per‑user config directory**, so it **survives an app
+update**:
 
-- **Auto-detects** your Steam copy of the game (scans every Steam library folder for the
-  one holding `vcb.pck` / the `vcb` executable). You can also point it at the folder
-  manually.
-- Lists the mods you've dropped into a `mods/` folder next to the launcher.
-- **Reads each mod's metadata** (name, version, author, description) from a `mod.json`
-  packed *inside* the `.pck`, so mods are identifiable even though they all install under
-  the single `vcb.pck` name. A sidecar `mod.json` next to the `.pck` also works.
-- **Activate** a mod → backs up the original `vcb.pck` once (to `vcb.pck.original`) and
-  copies the mod over `vcb.pck`.
-- **Revert to vanilla** → an always-visible button (top-right) puts the backup back so
-  you're one click away from the unmodded game at any time. (Selecting **Vanilla game**
-  and pressing **Restore vanilla** does the same thing.)
-- **Zipped mods** → drop a `.zip` bundling a `vcb.pck` + `mod.json` into `mods/` and the
-  launcher reads it and installs it just like a loose `.pck`.
-- **Remembers the game folder** → the folder you set (or auto-detect) is saved to
-  `launcher_config.json` next to the launcher, so it's already filled in next launch.
+| OS | Location |
+|---|---|
+| Windows | `%APPDATA%\vcb-launcher\launcher_config.json` |
+| macOS | `~/Library/Application Support/vcb-launcher/launcher_config.json` |
+| Linux | `~/.config/vcb-launcher/launcher_config.json` |
 
-## Using it
-
-The launcher opens on the **Runtime modding** tab (the recommended path — see above and
-[docs/MODDING.md](docs/MODDING.md)). The steps below are the **Legacy — whole‑pck swap**
-flow, which lives on the **Legacy** tab (opening it the first time shows a one‑time notice
-that it's the older, best‑effort model).
-
-1. Put the launcher executable anywhere. On first run it creates a `mods/` folder next to
-   itself.
-2. Drop mod packages into `mods/`. Each mod is a Godot `.pck`. Because every installed mod
-   is named `vcb.pck`, you can keep them apart however you like:
-   - one `.pck` per subfolder — `mods/multiplayer/vcb.pck`, `mods/traces/vcb.pck`, … , or
-   - distinctly-named files — `mods/multiplayer.pck`, `mods/traces.pck`, … , or
-   - a **zipped mod** — `mods/multiplayer.zip` containing a `vcb.pck` and a `mod.json`.
-   The launcher scans `mods/` recursively and identifies each by its embedded metadata.
-3. Launch it. On first run it auto-detects the game; after that it reuses the folder you
-   last used (remembered in `launcher_config.json`). If it can't find it, paste the game
-   folder path up top and press **Use**.
-4. Open the **Legacy** tab, pick a mod on the left and press **▶ Launch modded** — the
-   launcher copies it in as `vcb.pck` (backing up your original first) and starts the game.
-   **Activate only** just swaps the file if you'd rather launch from Steam. Select **Vanilla
-   game** to **Restore vanilla** or **▶ Launch vanilla**.
-
-> **One mod at a time.** Activating a mod replaces `vcb.pck`, so exactly one mod is live.
-> Combining mods needs a mod-loader (planned) and more mods to test with.
-
-> The launcher always runs the **original game executable** (the one with the correct,
-> closed-source simulation engine) — it only changes which `vcb.pck` sits next to it. Every
-> mod is expected to target that original exe.
-
-> The first activation over a **clean** install snapshots your original `vcb.pck` to
-> `vcb.pck.original`. If your `vcb.pck` was *already* a mod the first time you use the
-> launcher, there's no clean original to back up — use Steam's *Verify integrity of game
-> files* to get one, then activate.
-
-## Mod metadata
-
-Mods are identified by a `mod.json` the launcher reads in this order:
-
-1. embedded inside the `.pck` at `res://mod.json` (preferred), else
-2. a sidecar `mod.json` in the same folder as the `.pck`.
-
-```jsonc
-{
-  "schema": 1,
-  "id": "multiplayer",
-  "name": "VCB Multiplayer",
-  "version": "1.1.0",
-  "author": "n-popescu",
-  "description": "…",
-  "game": "Virtual Circuit Board",
-  "engine": "Godot 3.5.1",
-  "homepage": "https://github.com/n-popescu/vcb-mp"
-}
-```
-
-The [`vcb-mp`](https://github.com/n-popescu/vcb-mp) mod ships this file
-(see its `MOD_METADATA.md` for how to make sure it's packed into the exported `vcb.pck`).
+Older builds kept this file next to the executable, which on macOS is wiped when you replace the
+`.app` on update. The launcher **migrates** a next‑to‑the‑exe `launcher_config.json` into the new
+location automatically the first time it runs, so upgrading keeps your saved game folder.
 
 ## Staying up to date
 
@@ -147,7 +92,7 @@ card. When a newer version exists it shows a small prompt:
 - **Cancel** dismisses it for this run. Since the check happens at every startup, you'll be
   reminded again next time you open the launcher.
 - **Don't show again until the next version** stops the prompt for this version only — it
-  returns automatically once an even newer release is out. (Stored in `launcher_config.json`.)
+  returns automatically once an even newer release is out.
 
 The same **Check for updates** button also re‑checks every mod installed in your game folder;
 see [Updates & installed mods](#updates--installed-mods) above.
@@ -179,8 +124,8 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
 
 ## How it works
 
-- `src/pck.rs` — a tiny reader for the Godot `.pck` format; extracts `res://mod.json`
-  from a file or from bytes (for `.pck`s inside a zip).
+- `src/pck.rs` — a tiny reader for the Godot `.pck` format; extracts a packed file (e.g.
+  `res://mod.json`) by its `res://` path.
 - `src/pckbuild.rs` — reads a full Godot 3.x pck directory and **writes** a new one (used to
   patch `vcb.pck`, copying original files verbatim).
 - `src/projbin.rs` — reads and patches the embedded `project.binary` (adds the Mod Loader
@@ -203,20 +148,16 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
   Loader `.zip` packages, reads each manifest (name / `version_number` / `website_url`),
   derives its GitHub repo, checks that repo's latest release, and downloads + swaps the zip in
   place to update it (with unit tests for the manifest/repo parsing, asset selection, and scan).
-- `src/archive.rs` — zipped-mod support: reads metadata from a `.zip` and extracts its
-  bundled `.pck` on activation.
-- `src/meta.rs` — the `mod.json` schema + embedded/sidecar/zip lookup.
 - `src/steam.rs` — Steam library discovery (Windows registry + common paths; Linux
   native + Flatpak) and game-folder detection.
-- `src/config.rs` — persists the chosen game folder, the legacy-mode warning preference, and
-  the skipped-update version (`launcher_config.json`).
+- `src/config.rs` — persists the chosen game folder and the skipped‑update version in the OS's
+  per‑user config directory (see [Settings](#settings)), migrating a legacy next‑to‑the‑exe file.
 - `src/net.rs` — a tiny blocking HTTPS client (`ureq` + rustls) used by the update checker.
 - `src/update.rs` — the self-updater: checks GitHub Releases for a newer launcher, compares
   versions, and downloads + swaps in the right per-platform artifact (with unit tests for the
   version compare and asset selection).
-- `src/install.rs` — backup / restore / install (`.pck` and `.zip`) and "which mod is
-  active" detection.
-- `src/scan.rs` — finds `.pck`s and zipped mods under `mods/` and reads their metadata.
+- `src/launch.rs` — launches the original game executable (Windows `vcb.exe`, Linux
+  `vcb.x86_64`, or via Wine on macOS/Linux, resolving Wine on the `.app`'s minimal PATH).
 - `src/icon_render.rs` — a dependency-free rasteriser for the procedurally-drawn icon
   (the "circuit chip with a lit via" motif), size-parametric so one source renders every
   resolution.
