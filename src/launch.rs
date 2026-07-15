@@ -44,7 +44,6 @@ fn build_launch_command(game_dir: &Path) -> io::Result<Command> {
 
 #[cfg(target_os = "macos")]
 fn build_launch_command(game_dir: &Path) -> io::Result<Command> {
-    use std::path::PathBuf;
     // A native macOS build (rare) runs directly.
     let bare = game_dir.join("vcb");
     if bare.is_file() {
